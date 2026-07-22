@@ -1,0 +1,17 @@
+{
+  "name": "@investiq/config",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "files": [
+    "tsconfig.base.json",
+    "tsconfig.nextjs.json",
+    "eslint-base.js",
+    "tailwind.preset.js"
+  ],
+  "dependencies": {
+    "@eslint/js": "9.14.0",
+    "typescript-eslint": "8.13.0",
+    "eslint-plugin-jsx-a11y": "6.10.1"
+  }
+}

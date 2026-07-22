@@ -1,0 +1,34 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/*
+ * Semantic theme CSS variables — Document 2 §6.3a. next-themes toggles the
+ * `dark` class on <html>; Tailwind's `dark:` strategy + these variable
+ * overrides are what make theme switching a variable swap, not a component
+ * rewrite. Values mirror packages/ui/src/tokens/colors.ts's semanticTokens —
+ * kept in sync manually for now (Phase 1); a build-time codegen step from
+ * the token file is a reasonable Phase 5 polish item, not required now.
+ */
+:root {
+  --color-background: #f8fafc;
+  --color-surface: #ffffff;
+  --color-text-primary: #111827;
+  --color-text-secondary: #64748b;
+  --color-primary: #6c3bff;
+  --color-success: #10b981;
+}
+
+.dark {
+  --color-background: #111827;
+  --color-surface: #1a2233;
+  --color-text-primary: #ffffff;
+  --color-text-secondary: #94a3b8;
+  --color-primary: #8b5fff;
+  --color-success: #34d399;
+}
+
+body {
+  background-color: var(--color-background);
+  color: var(--color-text-primary);
+}

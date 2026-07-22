@@ -1,0 +1,60 @@
+"""LogoutUseCase — Document 3 §7.4: "Logout: refresh token is deleted...
+'Logout everywhere': tokenVersion on User is incremented."
+
+Two distinct operations exposed, matching the two distinct logout modes
+named in Document 3 §7.4 — a single "logout" endpoint that always did both
+would make "log out this device only" impossible to offer later.
+"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass
+from datetime import UTC, datetime
+
+from src.domain.auth.repositories import RefreshTokenRepository, UserRepository
+from src.domain.auth.value_objects import UserId
+from src.infrastructure.security.refresh_token_generator import hash_refresh_token
+
+
+@dataclass(frozen=True, slots=True)
+class LogoutCommand:
+    raw_refresh_token: str
+
+
+class LogoutUseCase:
+    """Revokes only the single refresh token presented — "log out this device"."""
+
+    def __init__(self, refresh_token_repository: RefreshTokenRepository) -> None:
+        self._refresh_token_repository = refresh_token_repository
+
+    async def execute(self, command: LogoutCommand) -> None:
+        token_hash = hash_refresh_token(command.raw_refresh_token)
+        token = await self._refresh_token_repository.get_by_token_hash(token_hash)
+        if token is not None and not token.is_revoked:
+            token.revoke(datetime.now(UTC))
+            await self._refresh_token_repository.save(token)
+
+
+@dataclass(frozen=True, slots=True)
+class LogoutEverywhereCommand:
+    user_id: UserId
+
+
+class LogoutEverywhereUseCase:
+    """Revokes all refresh tokens AND bumps token_version so outstanding
+    access tokens fail their version check immediately (Document 3 §7.4)."""
+
+    def __init__(
+        self,
+        user_repository: UserRepository,
+        refresh_token_repository: RefreshTokenRepository,
+    ) -> None:
+        self._user_repository = user_repository
+        self._refresh_token_repository = refresh_token_repository
+
+    async def execute(self, command: LogoutEverywhereCommand) -> None:
+        await self._refresh_token_repository.revoke_all_for_user(command.user_id, datetime.now(UTC))
+        user = await self._user_repository.get_by_id(command.user_id)
+        if user is not None:
+            user.invalidate_all_sessions()
+            await self._user_repository.save(user)

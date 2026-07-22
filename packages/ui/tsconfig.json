@@ -1,0 +1,9 @@
+{
+  "extends": "@investiq/config/tsconfig.base.json",
+  "compilerOptions": {
+    "jsx": "react-jsx",
+    "lib": ["dom", "dom.iterable", "ES2022"],
+    "noEmit": true
+  },
+  "include": ["src"]
+}

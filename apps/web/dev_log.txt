@@ -1,0 +1,16 @@
+
+> @investiq/web@0.1.0 dev C:\Users\MD SALMAN.A\investiq\apps\web
+> next dev
+
+   [1m[38;2;173;127;168m▲ Next.js 15.0.3[39m[22m
+   - Local:        http://localhost:3000
+
+ [32m[1m✓[22m[39m Starting...
+ [32m[1m✓[22m[39m Ready in 5.4s
+ [37m[1m○[22m[39m Compiling /middleware ...
+ [32m[1m✓[22m[39m Compiled /middleware in 980ms (91 modules)
+ [37m[1m○[22m[39m Compiling /login ...
+ [32m[1m✓[22m[39m Compiled /login in 4.9s (1446 modules)
+ GET /login?redirectTo=%2Fdashboard%2Fwatchlists [32m200[39m in 5542ms
+ [32m[1m✓[22m[39m Compiled in 889ms (716 modules)
+[?25h

@@ -1,0 +1,59 @@
+# Dependencies
+node_modules/
+.pnpm-store/
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# Build outputs
+.next/
+dist/
+build/
+*.egg-info/
+
+# Env files (never commit secrets — see .env.example for the template)
+.env
+.env.local
+.env.*.local
+!.env.example
+
+# Turbo
+.turbo/
+
+# Testing / coverage
+coverage/
+.coverage
+htmlcov/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# IDE
+.vscode/*
+!.vscode/extensions.json
+.idea/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+npm-debug.log*
+pnpm-debug.log*
+
+# Docker volumes data (if bind-mounted locally)
+infra/docker/volumes/
+
+# ML artifacts (never committed — stored in object storage per Document 4 §10.8)
+ml/models/*.pkl
+ml/models/*.h5
+ml/models/*.pt
+ml/models/artifacts/
+
+# Alembic (keep migration scripts, ignore local sqlite test DBs if any)
+*.sqlite3
+
+# Storybook build
+storybook-static/

@@ -1,0 +1,77 @@
+[tool.poetry]
+name = "investiq-core-api"
+version = "0.1.0"
+description = "INVEST IQ core-api — auth, users, portfolio, watchlist, screener, alerts, notifications, market data ingestion"
+authors = ["INVEST IQ"]
+packages = [{ include = "src" }]
+
+[tool.poetry.dependencies]
+python = ">=3.11,<3.13"
+fastapi = "^0.115.0"
+uvicorn = { extras = ["standard"], version = "^0.32.0" }
+pydantic = "^2.9.2"
+pydantic-settings = "^2.6.0"
+sqlalchemy = { extras = ["asyncio"], version = "^2.0.36" }
+asyncpg = "^0.30.0"
+alembic = "^1.13.3"
+redis = "^5.1.1"
+httpx = "^0.27.2"
+structlog = "^24.4.0"
+argon2-cffi = "^23.1.0"
+pyjwt = "^2.9.0"
+investiq-observability = { path = "../../libs/observability", develop = true }
+celery = "^5.4.0"
+yfinance = "^0.2.44"
+
+[tool.poetry.group.dev.dependencies]
+pytest = "^8.3.3"
+pytest-asyncio = "^0.24.0"
+mypy = "^1.13.0"
+ruff = "^0.7.2"
+httpx = "^0.27.2"
+testcontainers = { extras = ["postgres"], version = "^4.8.2" }
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM"]
+
+[tool.mypy]
+python_version = "3.11"
+strict = true
+plugins = ["pydantic.mypy"]
+
+[[tool.mypy.overrides]]
+# testcontainers ships no py.typed marker / type stubs as of this session —
+# a genuine third-party gap, not our code's fault (Document 6 §16.2's own
+# recommended library). Scoped ignore rather than a blanket suppression.
+module = "testcontainers.*"
+ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+# yfinance ships no py.typed marker / type stubs as of this session (Phase
+# 4) — same category of genuine third-party gap as testcontainers above,
+# not our code's fault. Scoped ignore, not a blanket suppression.
+module = "yfinance.*"
+ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+# celery ships no py.typed marker / type stubs as of this session (Phase
+# 4) — same category of genuine third-party gap as testcontainers/yfinance
+# above, not our code's fault. Scoped ignore, not a blanket suppression.
+module = "celery.*"
+ignore_missing_imports = true
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+markers = [
+    "integration: requires Docker (testcontainers) - excluded by default, run explicitly via `pytest -m integration`",
+]
+addopts = "-m 'not integration'"
+
+[build-system]
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api"

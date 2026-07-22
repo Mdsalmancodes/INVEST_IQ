@@ -1,0 +1,146 @@
+# INVEST IQ — local development orchestration.
+# Per docs/architecture/07-devops-cicd-deployment-scalability.md §17.4 (post-review
+# revision): Compose profiles so a developer only starts what their current work
+# touches. Build context for every service Dockerfile is the monorepo ROOT (not
+# the service subdirectory), since core-api/ai-service/web all depend on editable
+# local packages (libs/observability, packages/ui, packages/config).
+#
+# Usage:
+#   docker compose -f infra/docker-compose.yml --profile core up   (Postgres + 3 Redis + core-api + web)
+#   docker compose -f infra/docker-compose.yml --profile ml up     (adds Mongo + ai-service + its Celery worker)
+#   docker compose -f infra/docker-compose.yml --profile full up   (everything)
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: investiq
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    profiles: ["core", "ml", "full"]
+
+  redis-cache:
+    image: redis:7-alpine
+    command: redis-server --maxmemory-policy allkeys-lru
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+    profiles: ["core", "ml", "full"]
+
+  redis-broker:
+    image: redis:7-alpine
+    command: redis-server --appendonly yes
+    volumes:
+      - redisbrokerdata:/data
+    ports:
+      - "6380:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+    profiles: ["core", "ml", "full"]
+
+  redis-session:
+    image: redis:7-alpine
+    volumes:
+      - redissessiondata:/data
+    ports:
+      - "6381:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+    profiles: ["core", "ml", "full"]
+
+  mongo:
+    image: mongo:7
+    volumes:
+      - mongodata:/data/db
+    ports:
+      - "27017:27017"
+    healthcheck:
+      test: ["CMD", "mongosh", "--eval", "db.adminCommand('ping')"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    profiles: ["ml", "full"]
+
+  core-api:
+    build:
+      context: ..
+      dockerfile: apps/core-api/Dockerfile
+    env_file: ../apps/core-api/.env
+    environment:
+      DATABASE_URL: postgresql+asyncpg://postgres:postgres@postgres:5432/investiq
+      REDIS_CACHE_URL: redis://redis-cache:6379/0
+      REDIS_BROKER_URL: redis://redis-broker:6379/0
+      REDIS_SESSION_URL: redis://redis-session:6379/0
+      # "mock" unless the "ml" profile is also active — see Document 3 §7.1's
+      # MockAiServiceClient pattern (implemented as part of Phase 2+ work, not
+      # Phase 1's infrastructure skeleton).
+      AI_SERVICE_MODE: ${AI_SERVICE_MODE:-mock}
+      AI_SERVICE_BASE_URL: http://ai-service:8000
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis-cache:
+        condition: service_healthy
+      redis-broker:
+        condition: service_healthy
+      redis-session:
+        condition: service_healthy
+    ports:
+      - "8001:8000"
+    profiles: ["core", "ml", "full"]
+
+  ai-service:
+    build:
+      context: ..
+      dockerfile: apps/ai-service/Dockerfile
+    env_file: ../apps/ai-service/.env
+    environment:
+      REDIS_CACHE_URL: redis://redis-cache:6379/0
+      REDIS_BROKER_URL: redis://redis-broker:6379/0
+    depends_on:
+      redis-cache:
+        condition: service_healthy
+      redis-broker:
+        condition: service_healthy
+      mongo:
+        condition: service_healthy
+    ports:
+      - "8002:8000"
+    profiles: ["ml", "full"]
+
+  web:
+    build:
+      context: ..
+      dockerfile: apps/web/Dockerfile
+    environment:
+      NEXT_PUBLIC_API_BASE_URL: http://localhost:8001
+    depends_on:
+      - core-api
+    ports:
+      - "3000:3000"
+    profiles: ["core", "ml", "full"]
+
+volumes:
+  pgdata: {}
+  mongodata: {}
+  redisbrokerdata: {}
+  redissessiondata: {}

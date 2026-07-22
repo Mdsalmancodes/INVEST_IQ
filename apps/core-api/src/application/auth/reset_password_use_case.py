@@ -1,0 +1,104 @@
+"""RequestPasswordResetUseCase / ResetPasswordUseCase — Document 3 §7.4's
+password reset flow, using the same opaque-token pattern as email
+verification but a shorter TTL (1 hour, Document commentary in
+verification_token_store.py) given the more sensitive capability it grants.
+
+ResetPassword also invalidates all other sessions (Document 6 §15.6 lists
+"password change" as a security-relevant event) — matching User.change_
+password's own behavior, since a password reset is semantically a password
+change triggered via a different entry point.
+"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass
+from datetime import UTC, datetime
+
+from src.domain.auth.exceptions import InvalidTokenError, UserNotFoundError, WeakPasswordError
+from src.domain.auth.repositories import RefreshTokenRepository, UserRepository
+from src.domain.auth.value_objects import Email, PlaintextPassword, UserId
+from src.infrastructure.security.common_password_blocklist import is_common_password
+from src.infrastructure.security.password_hasher import Argon2PasswordHasher
+from src.infrastructure.security.verification_token_store import VerificationTokenStore
+
+
+@dataclass(frozen=True, slots=True)
+class RequestPasswordResetCommand:
+    email: str
+
+
+@dataclass(frozen=True, slots=True)
+class RequestPasswordResetResult:
+    raw_token: str
+    user_id: UserId
+
+
+class RequestPasswordResetUseCase:
+    def __init__(
+        self, user_repository: UserRepository, token_store: VerificationTokenStore
+    ) -> None:
+        self._user_repository = user_repository
+        self._token_store = token_store
+
+    async def execute(
+        self, command: RequestPasswordResetCommand
+    ) -> RequestPasswordResetResult | None:
+        """Returns None if no account exists — same enumeration-mitigation
+        requirement as RequestEmailVerificationUseCase."""
+        user = await self._user_repository.get_by_email(Email(command.email))
+        if user is None or user.is_oauth_only:
+            # OAuth-only accounts have no password to reset (Document 3 §8.1:
+            # hashed_password is NULL for OAuth-only accounts) — silently
+            # returning None here (rather than a distinct error) keeps this
+            # endpoint's response shape identical to the "no such user" case,
+            # for the same enumeration-mitigation reason.
+            return None
+        raw_token = await self._token_store.issue(str(user.id))
+        return RequestPasswordResetResult(raw_token=raw_token, user_id=user.id)
+
+
+@dataclass(frozen=True, slots=True)
+class ResetPasswordCommand:
+    raw_token: str
+    new_password: str
+
+
+class ResetPasswordUseCase:
+    def __init__(
+        self,
+        user_repository: UserRepository,
+        refresh_token_repository: RefreshTokenRepository,
+        token_store: VerificationTokenStore,
+        password_hasher: Argon2PasswordHasher,
+    ) -> None:
+        self._user_repository = user_repository
+        self._refresh_token_repository = refresh_token_repository
+        self._token_store = token_store
+        self._password_hasher = password_hasher
+
+    async def execute(self, command: ResetPasswordCommand) -> UserId:
+        new_password = PlaintextPassword(command.new_password)
+        if is_common_password(new_password.value):
+            raise WeakPasswordError(
+                "This password is too common. Please choose a stronger password."
+            )
+
+        user_id_str = await self._token_store.consume(command.raw_token)
+        if user_id_str is None:
+            raise InvalidTokenError("Password reset link is invalid or has expired")
+
+        user_id = UserId.from_string(user_id_str)
+        user = await self._user_repository.get_by_id(user_id)
+        if user is None:
+            raise UserNotFoundError("User for this reset token no longer exists")
+
+        user.change_password(self._password_hasher.hash(new_password))
+        await self._user_repository.save(user)
+
+        # change_password() already bumped token_version (invalidating
+        # access tokens); explicitly revoke refresh tokens too so a stolen
+        # refresh token also stops working immediately, not just on its
+        # next (already-blocked-by-version-check) access token exchange.
+        await self._refresh_token_repository.revoke_all_for_user(user.id, datetime.now(UTC))
+
+        return user.id
