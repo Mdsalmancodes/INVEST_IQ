@@ -121,6 +121,16 @@ export interface PortfolioSummaryResponse {
   daily_gain: string;
   holdings: HoldingSummaryResponse[];
   holdings_missing_price: string[];
+  /**
+   * Phase 9 addition — populated only from a real-time WebSocket tick
+   * (PortfolioStreamingService's sector_allocation aggregation, layered
+   * on top of Phase 3's frozen PortfolioCalculationService). The REST
+   * GET /portfolios/{id}/summary endpoint itself does NOT return this
+   * field (confirmed by reading its response model before adding this)
+   * — undefined on the initial HTTP-loaded summary, populated once the
+   * first WS portfolio tick arrives.
+   */
+  sector_allocation?: Array<{ sector: string; market_value: string; allocation_pct: string }>;
 }
 
 export interface CreatePortfolioPayload {

@@ -42,11 +42,12 @@ from src.infrastructure.persistence.redis.clients import RedisClients, get_redis
 from src.infrastructure.rate_limiting.login_rate_limiter import LoginRateLimiter
 from src.infrastructure.security.jwt_provider import JwtProvider
 from src.infrastructure.security.password_hasher import Argon2PasswordHasher
+from src.infrastructure.security.token_blacklist import TokenBlacklist
 from src.infrastructure.security.verification_token_store import (
     email_verification_store,
     password_reset_store,
 )
-from src.presentation.dependencies.auth import get_jwt_provider
+from src.presentation.dependencies.auth import get_jwt_provider, get_token_blacklist
 
 
 def get_password_hasher() -> Argon2PasswordHasher:
@@ -90,8 +91,9 @@ def get_refresh_token_use_case(
 
 def get_logout_use_case(
     session: Annotated[AsyncSession, Depends(get_db_session)],
+    token_blacklist: Annotated[TokenBlacklist, Depends(get_token_blacklist)],
 ) -> LogoutUseCase:
-    return LogoutUseCase(SqlAlchemyRefreshTokenRepository(session))
+    return LogoutUseCase(SqlAlchemyRefreshTokenRepository(session), token_blacklist)
 
 
 def get_logout_everywhere_use_case(
@@ -139,6 +141,7 @@ def get_reset_password_use_case(
         SqlAlchemyRefreshTokenRepository(session),
         password_reset_store(redis_clients.session),
         hasher,
+        audit_logger=AuditLogger(SqlAlchemyAuditLogRepository(session)),
     )
 
 

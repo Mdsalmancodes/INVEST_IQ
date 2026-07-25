@@ -17,6 +17,13 @@ vi.mock("../../../store/auth-store", () => ({
   useAuthStore: { getState: () => ({ accessToken: "fake-token" }) },
 }));
 
+vi.mock("../../realtime/hooks/useRealtimeConnection", () => ({
+  useRealtimeConnection: () => ({
+    connectionState: "connected",
+    subscribe: () => () => {},
+  }),
+}));
+
 const BASE_WATCHLIST = {
   id: "w1",
   user_id: "u1",

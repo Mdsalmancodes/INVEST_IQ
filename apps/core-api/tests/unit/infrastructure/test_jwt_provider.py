@@ -38,6 +38,18 @@ class TestIssueAndVerifyAccessToken:
         assert claims.role == Role.PRO_USER
         assert claims.token_version == 3
 
+    def test_issues_a_unique_jti_per_token(self) -> None:
+        provider = _make_provider()
+        user_id = UserId.new()
+        token_a = provider.issue_access_token(user_id, Role.USER, token_version=0)
+        token_b = provider.issue_access_token(user_id, Role.USER, token_version=0)
+
+        claims_a = provider.verify_access_token(token_a)
+        claims_b = provider.verify_access_token(token_b)
+
+        assert claims_a.jti != claims_b.jti
+        assert claims_a.jti != ""
+
     def test_token_header_carries_the_current_kid(self) -> None:
         provider = _make_provider()
         token = provider.issue_access_token(UserId.new(), Role.USER, token_version=0)
@@ -68,6 +80,28 @@ class TestIssueAndVerifyAccessToken:
         provider = _make_provider()
         with pytest.raises(InvalidTokenError):
             provider.verify_access_token("not.a.real.jwt")
+
+    def test_accepts_a_pre_phase_8_token_with_no_jti_claim_at_all(self) -> None:
+        # Simulates a token issued before the jti claim existed — must
+        # still verify successfully (backward compatibility during
+        # rollout), with jti simply defaulting to "".
+        provider = _make_provider()
+        legacy_token = pyjwt.encode(
+            {
+                "sub": str(UserId.new()),
+                "role": "user",
+                "token_version": 0,
+                "iat": int(time.time()),
+                "exp": int(time.time()) + 900,
+            },
+            "current-secret-value-at-least-32-characters-long",
+            algorithm="HS256",
+            headers={"kid": "key-2026-07"},
+        )
+
+        claims = provider.verify_access_token(legacy_token)
+
+        assert claims.jti == ""
 
 
 class TestKidBasedRotationOverlap:

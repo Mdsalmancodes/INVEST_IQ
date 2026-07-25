@@ -127,10 +127,18 @@ export const authApi = {
     return result;
   },
 
-  logoutCurrentSession: async () => {
+  logoutCurrentSession: async (accessToken: string) => {
     if (refreshTokenInMemory === null) return;
+    // Phase 8: core-api's POST /api/v1/auth/logout now requires
+    // authentication (it needs the presented access token's jti to add
+    // to the Redis blacklist — see src/application/auth/logout_use_case.py
+    // and src/presentation/routers/auth_router.py). Previously this call
+    // was anonymous; the accessToken param is a required addition here,
+    // not optional, since a logout call with no bearer token will now be
+    // rejected with 401 before ever reaching LogoutUseCase.
     await request<undefined>("/api/v1/auth/logout", {
       method: "POST",
+      accessToken,
       body: JSON.stringify({ refresh_token: refreshTokenInMemory }),
     });
     setRefreshToken(null);

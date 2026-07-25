@@ -14,6 +14,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import Any
+from uuid import uuid4
 
 import jwt
 
@@ -30,6 +31,12 @@ class AccessTokenClaims:
     role: Role
     token_version: int
     expires_at: datetime
+    jti: str
+    """Phase 8 addition — a unique id for THIS specific access token,
+    distinct from token_version (which invalidates every token for a user
+    at once). jti is what TokenBlacklist keys on, letting logout revoke
+    exactly the one access token presented, without forcing every other
+    active session for that user to re-authenticate too."""
 
 
 class JwtProvider:
@@ -63,6 +70,7 @@ class JwtProvider:
             "token_version": token_version,
             "iat": int(now.timestamp()),
             "exp": int(expires_at.timestamp()),
+            "jti": str(uuid4()),
         }
         return jwt.encode(
             payload,
@@ -93,6 +101,15 @@ class JwtProvider:
                 role=Role(payload["role"]),
                 token_version=payload["token_version"],
                 expires_at=datetime.fromtimestamp(payload["exp"], tz=UTC),
+                # Backward-compatible: a token issued before this Phase 8
+                # change has no jti claim at all — rather than hard-failing
+                # every outstanding token the moment this ships (forcing an
+                # immediate mass logout), such a token is treated as
+                # blacklist-unwatchable (it can never be individually
+                # revoked by jti, only by the existing token_version bump),
+                # which naturally self-resolves as those tokens expire
+                # within their normal 15-minute TTL.
+                jti=payload.get("jti", ""),
             )
         except (KeyError, ValueError) as exc:
             raise InvalidTokenError("Access token payload is malformed") from exc

@@ -8,6 +8,7 @@ HTTP via raise_as_http() -> return DTO.
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, Request, status
@@ -143,9 +144,29 @@ async def refresh_token(
 @router.post("/logout", status_code=status.HTTP_204_NO_CONTENT, response_model=None)
 async def logout(
     body: LogoutRequest,
+    current_user: Annotated[CurrentUser, Depends(get_current_user)],
     use_case: Annotated[LogoutUseCaseType, Depends(get_logout_use_case)],
 ) -> None:
-    await use_case.execute(LogoutCommand(body.refresh_token))
+    # Phase 8: /logout now requires authentication (previously anonymous,
+    # taking only the refresh token in the body) so the presented access
+    # token's jti/remaining-TTL is known and can be blacklisted — closing
+    # the gap where logout deleted only the refresh token while the
+    # still-valid access token remained usable for the rest of its natural
+    # TTL. Any legitimate client calling /logout already has a valid
+    # access token in hand (it is, after all, logging out an active
+    # session), so this is a non-breaking tightening, not a new burden.
+    remaining_ttl = 0
+    if current_user.expires_at is not None:
+        remaining_ttl = max(
+            0, int((current_user.expires_at - datetime.now(UTC)).total_seconds())
+        )
+    await use_case.execute(
+        LogoutCommand(
+            raw_refresh_token=body.refresh_token,
+            access_token_jti=current_user.jti,
+            access_token_remaining_ttl_seconds=remaining_ttl,
+        )
+    )
 
 
 @router.post("/logout-everywhere", status_code=status.HTTP_204_NO_CONTENT, response_model=None)

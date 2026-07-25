@@ -1,9 +1,14 @@
 "use client";
 
 import { Card } from "@investiq/ui";
+import { useQueryClient } from "@tanstack/react-query";
 import { motion } from "motion/react";
+import { useEffect } from "react";
 
-import { usePortfolioSummary } from "../hooks/useTransactions";
+import type { PortfolioSummaryResponse } from "../../../lib/portfolio-api";
+import { AnimatedNumber } from "../../realtime/components/AnimatedNumber";
+import { useRealtimeConnection } from "../../realtime/hooks/useRealtimeConnection";
+import { summaryKeys, usePortfolioSummary } from "../hooks/useTransactions";
 
 export interface PortfolioSummaryCardsProps {
   portfolioId: string;
@@ -32,9 +37,50 @@ function gainColorClass(value: string): string {
  * Investment, Current Value, Profit/Loss (with %), Realized Gain,
  * Unrealized Gain, Dividend Income, Daily Gain/Loss. Explicit
  * loading/error/empty states per the founder's Phase 3 requirement.
+ * Initial load + fallback polling via usePortfolioSummary (Phase 3,
+ * UNMODIFIED — this component works identically with the WebSocket
+ * entirely offline).
+ *
+ * Phase 9 ADDITIVE ENHANCEMENT: subscribes to `portfolio:{portfolioId}`
+ * over the shared WebSocket connection and patches the SAME TanStack
+ * Query cache entry usePortfolioSummary reads from whenever a fresh
+ * tick arrives (PortfolioStreamingService's own _summary_to_payload
+ * shape is a compatible subset of PortfolioSummaryResponse's top-level
+ * fields, plus a NEW `sector_allocation` array satisfying the "Sector
+ * Allocation"/"Investment Distribution" requirement — holdings/
+ * holdings_missing_price are preserved from the previous cache value
+ * since the WS tick doesn't recompute the full per-holding breakdown).
+ * Each headline number renders through AnimatedNumber so a live update
+ * transitions smoothly instead of snapping.
  */
 export function PortfolioSummaryCards({ portfolioId }: PortfolioSummaryCardsProps) {
   const { data: summary, isLoading, isError, error } = usePortfolioSummary(portfolioId);
+  const queryClient = useQueryClient();
+  const { subscribe } = useRealtimeConnection();
+
+  useEffect(() => {
+    return subscribe(`portfolio:${portfolioId}`, (envelope) => {
+      const tick = envelope.data as
+        | (Omit<PortfolioSummaryResponse, "holdings" | "holdings_missing_price" | "sector_allocation"> & {
+            sector_allocation: Array<{
+              sector: string;
+              market_value: string;
+              allocation_pct: string;
+            }>;
+          })
+        | undefined;
+      if (!tick || tick.portfolio_id !== portfolioId) return;
+
+      queryClient.setQueryData<PortfolioSummaryResponse>(
+        summaryKeys.detail(portfolioId),
+        (previous) => ({
+          ...tick,
+          holdings: previous?.holdings ?? [],
+          holdings_missing_price: previous?.holdings_missing_price ?? [],
+        })
+      );
+    });
+  }, [portfolioId, subscribe, queryClient]);
 
   if (isLoading) {
     return (
@@ -65,28 +111,28 @@ export function PortfolioSummaryCards({ portfolioId }: PortfolioSummaryCardsProp
   }
 
   const cards = [
-    { label: "Total Investment", value: formatMoney(summary.total_investment) },
-    { label: "Current Value", value: formatMoney(summary.current_value) },
+    { label: "Total Investment", value: Number.parseFloat(summary.total_investment) },
+    { label: "Current Value", value: Number.parseFloat(summary.current_value) },
     {
       label: "Profit / Loss",
-      value: formatMoney(summary.profit_loss),
+      value: Number.parseFloat(summary.profit_loss),
       sub: formatPercent(summary.profit_loss_pct),
       colorClass: gainColorClass(summary.profit_loss),
     },
     {
       label: "Realized Gain",
-      value: formatMoney(summary.realized_gain),
+      value: Number.parseFloat(summary.realized_gain),
       colorClass: gainColorClass(summary.realized_gain),
     },
     {
       label: "Unrealized Gain",
-      value: formatMoney(summary.unrealized_gain),
+      value: Number.parseFloat(summary.unrealized_gain),
       colorClass: gainColorClass(summary.unrealized_gain),
     },
-    { label: "Dividend Income", value: formatMoney(summary.dividend_income) },
+    { label: "Dividend Income", value: Number.parseFloat(summary.dividend_income) },
     {
       label: "Daily Gain/Loss",
-      value: formatMoney(summary.daily_gain),
+      value: Number.parseFloat(summary.daily_gain),
       colorClass: gainColorClass(summary.daily_gain),
     },
   ];
@@ -102,9 +148,11 @@ export function PortfolioSummaryCards({ portfolioId }: PortfolioSummaryCardsProp
         >
           <Card>
             <p className="text-sm font-medium text-text-secondary">{card.label}</p>
-            <p className={`mt-1 text-2xl font-semibold ${card.colorClass ?? "text-text-primary"}`}>
-              {card.value}
-            </p>
+            <AnimatedNumber
+              value={card.value}
+              format={(n) => formatMoney(n.toString())}
+              className={`mt-1 block text-2xl font-semibold ${card.colorClass ?? "text-text-primary"}`}
+            />
             {card.sub && <p className={`text-sm ${card.colorClass ?? ""}`}>{card.sub}</p>}
           </Card>
         </motion.div>
@@ -116,6 +164,21 @@ export function PortfolioSummaryCards({ portfolioId }: PortfolioSummaryCardsProp
         >
           {summary.holdings_missing_price.length} holding(s) are missing current price data and
           are excluded from Current Value, Unrealized Gain, Allocation %, and Daily Gain/Loss.
+        </Card>
+      )}
+      {summary.sector_allocation && summary.sector_allocation.length > 0 && (
+        <Card className="col-span-full">
+          <p className="text-sm font-medium text-text-secondary">Sector Allocation</p>
+          <ul className="mt-2 space-y-1">
+            {summary.sector_allocation.map((entry) => (
+              <li key={entry.sector} className="flex items-center justify-between text-sm">
+                <span className="text-text-primary">{entry.sector}</span>
+                <span className="text-text-secondary">
+                  {formatMoney(entry.market_value)} ({Number.parseFloat(entry.allocation_pct).toFixed(1)}%)
+                </span>
+              </li>
+            ))}
+          </ul>
         </Card>
       )}
     </div>

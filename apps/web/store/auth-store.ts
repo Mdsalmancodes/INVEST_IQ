@@ -1,5 +1,6 @@
 import { create } from "zustand";
 
+import { decodeAccessToken } from "../lib/jwt";
 import type { Role } from "./types";
 
 /**
@@ -41,14 +42,47 @@ export interface AuthUser {
 interface AuthState {
   accessToken: string | null;
   isAuthenticated: boolean;
+  /**
+   * Phase 8 addition — the current user's id/role, decoded client-side
+   * from the access token's own claims (lib/jwt.ts's decodeAccessToken,
+   * no signature verification, UI-rendering purposes only; see that
+   * module's docstring for why this is not a security boundary). null
+   * whenever accessToken is null, or if a token somehow fails to decode
+   * (never crashes the store — a decode failure just means no
+   * role-gated UI renders, which is the safe default).
+   */
+  user: AuthUser | null;
+  /**
+   * Phase 8 addition — the access token's own expiry (ms epoch), read
+   * from its `exp` claim. Used by session-management/auto-logout
+   * (Task 12) to know when a proactive refresh or idle-driven logout is
+   * due, without re-decoding the token at every check.
+   */
+  expiresAt: number | null;
   setAccessToken: (accessToken: string) => void;
   clearSession: () => void;
+  /** Phase 8 addition — true if the current user's role is one of `roles`. False when logged out or role is unknown. */
+  hasRole: (roles: Role[]) => boolean;
 }
 
-export const useAuthStore = create<AuthState>((set) => ({
+export const useAuthStore = create<AuthState>((set, get) => ({
   accessToken: null,
   isAuthenticated: false,
-  setAccessToken: (accessToken) => set({ accessToken, isAuthenticated: true }),
-  clearSession: () => set({ accessToken: null, isAuthenticated: false }),
+  user: null,
+  expiresAt: null,
+  setAccessToken: (accessToken) => {
+    const decoded = decodeAccessToken(accessToken);
+    set({
+      accessToken,
+      isAuthenticated: true,
+      user: decoded ? { userId: decoded.userId, role: decoded.role } : null,
+      expiresAt: decoded?.expiresAt ?? null,
+    });
+  },
+  clearSession: () => set({ accessToken: null, isAuthenticated: false, user: null, expiresAt: null }),
+  hasRole: (roles) => {
+    const currentUser = get().user;
+    return currentUser !== null && roles.includes(currentUser.role);
+  },
 }));
 

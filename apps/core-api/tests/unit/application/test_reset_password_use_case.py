@@ -167,3 +167,50 @@ class TestResetPassword:
 
         with pytest.raises(WeakPasswordError):
             await reset_use_case.execute(ResetPasswordCommand(issued.raw_token, "1234567890"))
+
+    async def test_records_a_password_change_audit_entry_when_a_logger_is_injected(
+        self,
+    ) -> None:
+        from src.application.auth.audit_logger import AuditLogger
+        from tests.unit.application.fakes import FakeAuditLogRepository
+
+        user_repo = FakeUserRepository()
+        refresh_repo = FakeRefreshTokenRepository()
+        hasher = Argon2PasswordHasher()
+        user = await _make_password_user(user_repo, hasher)
+        token_store = FakeVerificationTokenStore()
+        audit_repo = FakeAuditLogRepository()
+        audit_logger = AuditLogger(audit_repo)
+
+        request_use_case = RequestPasswordResetUseCase(user_repo, token_store)
+        reset_use_case = ResetPasswordUseCase(
+            user_repo, refresh_repo, token_store, hasher, audit_logger=audit_logger
+        )
+        issued = await request_use_case.execute(RequestPasswordResetCommand(str(user.email)))
+        assert issued is not None
+
+        await reset_use_case.execute(
+            ResetPasswordCommand(issued.raw_token, "a-brand-new-strong-password")
+        )
+
+        assert len(audit_repo.entries) == 1
+        assert audit_repo.entries[0].action == "auth.password_change"
+        assert audit_repo.entries[0].user_id == user.id
+
+    async def test_works_without_an_audit_logger_injected_at_all(self) -> None:
+        # Backward-compatible constructor default (audit_logger=None) —
+        # every pre-Phase-8 call site/test continues to work unchanged.
+        user_repo = FakeUserRepository()
+        refresh_repo = FakeRefreshTokenRepository()
+        hasher = Argon2PasswordHasher()
+        user = await _make_password_user(user_repo, hasher)
+        token_store = FakeVerificationTokenStore()
+
+        request_use_case = RequestPasswordResetUseCase(user_repo, token_store)
+        reset_use_case = ResetPasswordUseCase(user_repo, refresh_repo, token_store, hasher)
+        issued = await request_use_case.execute(RequestPasswordResetCommand(str(user.email)))
+        assert issued is not None
+
+        await reset_use_case.execute(
+            ResetPasswordCommand(issued.raw_token, "a-brand-new-strong-password")
+        )  # should not raise

@@ -304,6 +304,97 @@ class TestAddTransactionUseCase:
                 )
             )
 
+    async def test_records_a_large_transaction_audit_entry_when_over_threshold(self) -> None:
+        from src.application.auth.audit_logger import AuditLogger
+        from src.domain.auth.value_objects import UserId
+        from tests.unit.application.fakes import FakeAuditLogRepository
+
+        portfolio_repo = FakePortfolioRepository()
+        tx_repo = FakeTransactionRepository()
+        audit_repo = FakeAuditLogRepository()
+        owner_user_id = str(UserId.new())
+        created = await CreatePortfolioUseCase(portfolio_repo).execute(
+            CreatePortfolioCommand(user_id=owner_user_id, name="P")
+        )
+        use_case = AddTransactionUseCase(
+            portfolio_repo,
+            tx_repo,
+            audit_logger=AuditLogger(audit_repo),
+            large_transaction_threshold_usd=10_000.0,
+        )
+
+        await use_case.execute(
+            AddTransactionCommand(
+                portfolio_id=created.id,
+                requesting_user_id=owner_user_id,
+                type=TransactionType.BUY,
+                executed_at=NOW,
+                instrument_id=INSTRUMENT_A,
+                quantity=Quantity(Decimal("200")),
+                price=Money(Decimal("100")),  # 200 * 100 = 20,000 >= 10,000 threshold
+            )
+        )
+
+        assert len(audit_repo.entries) == 1
+        assert audit_repo.entries[0].action == "portfolio.large_transaction"
+
+    async def test_does_not_record_an_audit_entry_when_under_threshold(self) -> None:
+        from src.application.auth.audit_logger import AuditLogger
+        from src.domain.auth.value_objects import UserId
+        from tests.unit.application.fakes import FakeAuditLogRepository
+
+        portfolio_repo = FakePortfolioRepository()
+        tx_repo = FakeTransactionRepository()
+        audit_repo = FakeAuditLogRepository()
+        owner_user_id = str(UserId.new())
+        created = await CreatePortfolioUseCase(portfolio_repo).execute(
+            CreatePortfolioCommand(user_id=owner_user_id, name="P")
+        )
+        use_case = AddTransactionUseCase(
+            portfolio_repo,
+            tx_repo,
+            audit_logger=AuditLogger(audit_repo),
+            large_transaction_threshold_usd=10_000.0,
+        )
+
+        await use_case.execute(
+            AddTransactionCommand(
+                portfolio_id=created.id,
+                requesting_user_id=owner_user_id,
+                type=TransactionType.BUY,
+                executed_at=NOW,
+                instrument_id=INSTRUMENT_A,
+                quantity=Quantity(Decimal("10")),
+                price=Money(Decimal("100")),  # 10 * 100 = 1,000 < 10,000 threshold
+            )
+        )
+
+        assert audit_repo.entries == []
+
+    async def test_works_without_an_audit_logger_or_threshold_injected(self) -> None:
+        # Backward-compatible constructor defaults (audit_logger=None,
+        # large_transaction_threshold_usd=None) — every pre-Phase-8 call
+        # site/test (like the ones above in this same class) continues
+        # to work unchanged.
+        portfolio_repo = FakePortfolioRepository()
+        tx_repo = FakeTransactionRepository()
+        created = await CreatePortfolioUseCase(portfolio_repo).execute(
+            CreatePortfolioCommand(user_id="user-1", name="P")
+        )
+        use_case = AddTransactionUseCase(portfolio_repo, tx_repo)
+
+        await use_case.execute(
+            AddTransactionCommand(
+                portfolio_id=created.id,
+                requesting_user_id="user-1",
+                type=TransactionType.BUY,
+                executed_at=NOW,
+                instrument_id=INSTRUMENT_A,
+                quantity=Quantity(Decimal("200")),
+                price=Money(Decimal("100")),
+            )
+        )  # should not raise
+
     async def test_invalid_sell_does_not_persist_anything(self) -> None:
         # Selling more than held must raise BEFORE any save() call —
         # verifies the "no partial persistence on domain-rule violation"

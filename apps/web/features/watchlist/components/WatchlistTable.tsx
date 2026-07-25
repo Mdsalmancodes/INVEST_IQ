@@ -1,9 +1,13 @@
 "use client";
 
 import { Card } from "@investiq/ui";
+import { useQueryClient } from "@tanstack/react-query";
 import Link from "next/link";
+import { useEffect } from "react";
 
-import { useRemoveWatchlistItem, useUpdateWatchlistItem, useWatchlist } from "../hooks/useWatchlists";
+import type { WatchlistResponse } from "../../../lib/watchlist-api";
+import { useRealtimeConnection } from "../../realtime/hooks/useRealtimeConnection";
+import { useRemoveWatchlistItem, useUpdateWatchlistItem, useWatchlist, watchlistKeys } from "../hooks/useWatchlists";
 
 export interface WatchlistTableProps {
   watchlistId: string;
@@ -34,12 +38,79 @@ function gainColorClass(value: string | null): string {
  * price, daily change/%, market status/delayed indicator, last updated
  * (via WatchlistEnrichmentService, Phase 4/5 integration point), plus
  * pin/reorder/remove actions. Uses GET /watchlists/{id} (the full detail
- * endpoint with quotes), not the list endpoint.
+ * endpoint with quotes), not the list endpoint. Initial load + fallback
+ * polling via useWatchlist's existing 30s refetchInterval (Phase 5,
+ * UNMODIFIED — this component works identically with the WebSocket
+ * entirely offline).
+ *
+ * Phase 9 ADDITIVE ENHANCEMENT: subscribes to `watchlist` over the
+ * shared WebSocket connection and merges each incoming enriched-
+ * watchlist tick (WatchlistStreamingService's own
+ * _enriched_watchlist_to_payload shape — item_id-keyed quote fields
+ * only) into the SAME TanStack Query cache entry useWatchlist reads
+ * from, preserving every non-quote field (id/instrument_id/position/
+ * is_pinned/etc.) already present on each item — the WS tick only ever
+ * carries quote data, never the full item record. A tick for a
+ * DIFFERENT watchlist_id than this component's own watchlistId is
+ * ignored (the server pushes one message per watchlist the user has
+ * open a topic subscription for; a page showing multiple watchlists
+ * mounts one WatchlistTable per id, each filtering to its own).
  */
 export function WatchlistTable({ watchlistId }: WatchlistTableProps) {
   const { data: watchlist, isLoading, isError, error } = useWatchlist(watchlistId);
   const updateItem = useUpdateWatchlistItem(watchlistId);
   const removeItem = useRemoveWatchlistItem(watchlistId);
+  const queryClient = useQueryClient();
+  const { subscribe } = useRealtimeConnection();
+
+  useEffect(() => {
+    return subscribe("watchlist", (envelope) => {
+      const tick = envelope.data as
+        | {
+            watchlist_id: string;
+            market_status: string | null;
+            items: Array<{
+              item_id: string;
+              price: string | null;
+              previous_close: string | null;
+              daily_change: string | null;
+              daily_change_pct: string | null;
+              is_delayed: boolean;
+              error: string | null;
+            }>;
+          }
+        | undefined;
+      if (!tick || tick.watchlist_id !== watchlistId) return;
+
+      queryClient.setQueryData<WatchlistResponse>(
+        watchlistKeys.detail(watchlistId),
+        (previous) => {
+          if (!previous) return previous;
+          const quoteByItemId = new Map(tick.items.map((i) => [i.item_id, i]));
+          return {
+            ...previous,
+            market_status: tick.market_status,
+            items: previous.items.map((item) => {
+              const freshQuote = quoteByItemId.get(item.id);
+              if (!freshQuote || !item.quote) return item;
+              return {
+                ...item,
+                quote: {
+                  ...item.quote,
+                  price: freshQuote.price,
+                  previous_close: freshQuote.previous_close,
+                  daily_change: freshQuote.daily_change,
+                  daily_change_pct: freshQuote.daily_change_pct,
+                  is_delayed: freshQuote.is_delayed,
+                  error: freshQuote.error,
+                },
+              };
+            }),
+          };
+        }
+      );
+    });
+  }, [watchlistId, subscribe, queryClient]);
 
   if (isLoading) {
     return (

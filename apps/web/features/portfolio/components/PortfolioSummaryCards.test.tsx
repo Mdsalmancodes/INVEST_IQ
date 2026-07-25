@@ -15,6 +15,13 @@ vi.mock("../../../store/auth-store", () => ({
   useAuthStore: { getState: () => ({ accessToken: "fake-token" }) },
 }));
 
+vi.mock("../../realtime/hooks/useRealtimeConnection", () => ({
+  useRealtimeConnection: () => ({
+    connectionState: "connected",
+    subscribe: () => () => {},
+  }),
+}));
+
 describe("PortfolioSummaryCards", () => {
   beforeEach(() => {
     vi.clearAllMocks();

@@ -9,6 +9,7 @@ from typing import Annotated
 from fastapi import Depends
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from src.application.auth.audit_logger import AuditLogger
 from src.application.portfolio.add_transaction_use_case import AddTransactionUseCase
 from src.application.portfolio.calculation_service import PortfolioCalculationService
 from src.application.portfolio.create_portfolio_use_case import CreatePortfolioUseCase
@@ -24,7 +25,11 @@ from src.application.portfolio.update_portfolio_use_case import (
     DeletePortfolioUseCase,
     UpdatePortfolioUseCase,
 )
+from src.config import Settings, get_settings
 from src.infrastructure.market_data.real_price_provider import RealPriceProvider
+from src.infrastructure.persistence.postgres.repositories.audit_log_repository import (
+    SqlAlchemyAuditLogRepository,
+)
 from src.infrastructure.persistence.postgres.repositories.ohlcv_bar_repository import (
     SqlAlchemyOhlcvBarRepository,
 )
@@ -69,9 +74,13 @@ def get_delete_portfolio_use_case(
 
 def get_add_transaction_use_case(
     session: Annotated[AsyncSession, Depends(get_db_session)],
+    settings: Annotated[Settings, Depends(get_settings)],
 ) -> AddTransactionUseCase:
     return AddTransactionUseCase(
-        SqlAlchemyPortfolioRepository(session), SqlAlchemyTransactionRepository(session)
+        SqlAlchemyPortfolioRepository(session),
+        SqlAlchemyTransactionRepository(session),
+        audit_logger=AuditLogger(SqlAlchemyAuditLogRepository(session)),
+        large_transaction_threshold_usd=settings.large_transaction_audit_threshold_usd,
     )
 
 

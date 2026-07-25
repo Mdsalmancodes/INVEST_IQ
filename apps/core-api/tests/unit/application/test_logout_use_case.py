@@ -19,6 +19,17 @@ from src.infrastructure.security.refresh_token_generator import (
 from tests.unit.application.fakes import FakeRefreshTokenRepository, FakeUserRepository
 
 
+class FakeTokenBlacklist:
+    def __init__(self) -> None:
+        self.added: list[tuple[str, int]] = []
+
+    async def add(self, jti: str, ttl_seconds: int) -> None:
+        self.added.append((jti, ttl_seconds))
+
+    async def is_blacklisted(self, jti: str) -> bool:
+        return any(added_jti == jti for added_jti, _ in self.added)
+
+
 async def _make_user_with_two_tokens(
     user_repo: FakeUserRepository, token_repo: FakeRefreshTokenRepository
 ) -> tuple[User, str, str]:
@@ -67,6 +78,44 @@ class TestLogoutUseCase:
     async def test_logging_out_an_unknown_token_does_not_raise(self) -> None:
         token_repo = FakeRefreshTokenRepository()
         use_case = LogoutUseCase(token_repo)
+        await use_case.execute(LogoutCommand("never-issued-token"))  # should not raise
+
+    async def test_blacklists_the_current_access_token_when_jti_and_ttl_are_provided(
+        self,
+    ) -> None:
+        user_repo, token_repo = FakeUserRepository(), FakeRefreshTokenRepository()
+        _, token_a, _ = await _make_user_with_two_tokens(user_repo, token_repo)
+        blacklist = FakeTokenBlacklist()
+        use_case = LogoutUseCase(token_repo, blacklist)
+
+        await use_case.execute(
+            LogoutCommand(
+                raw_refresh_token=token_a,
+                access_token_jti="some-jti",
+                access_token_remaining_ttl_seconds=300,
+            )
+        )
+
+        assert blacklist.added == [("some-jti", 300)]
+
+    async def test_does_not_blacklist_anything_when_jti_is_not_provided(self) -> None:
+        # Matches every pre-Phase-8 call site/test that only cares about
+        # refresh-token revocation — nothing should be blacklisted when
+        # there is no jti to blacklist.
+        token_repo = FakeRefreshTokenRepository()
+        blacklist = FakeTokenBlacklist()
+        use_case = LogoutUseCase(token_repo, blacklist)
+
+        await use_case.execute(LogoutCommand(raw_refresh_token="never-issued-token"))
+
+        assert blacklist.added == []
+
+    async def test_works_without_a_token_blacklist_injected_at_all(self) -> None:
+        # Backward-compatible constructor default (token_blacklist=None) —
+        # existing callers that never pass one continue to work.
+        token_repo = FakeRefreshTokenRepository()
+        use_case = LogoutUseCase(token_repo)
+
         await use_case.execute(LogoutCommand("never-issued-token"))  # should not raise
 
 

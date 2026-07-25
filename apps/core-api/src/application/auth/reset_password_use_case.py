@@ -6,7 +6,10 @@ verification_token_store.py) given the more sensitive capability it grants.
 ResetPassword also invalidates all other sessions (Document 6 §15.6 lists
 "password change" as a security-relevant event) — matching User.change_
 password's own behavior, since a password reset is semantically a password
-change triggered via a different entry point.
+change triggered via a different entry point. Phase 8 additionally records
+this event via AuditLogger — Document 6 §15.6 explicitly names "password
+change" in its required audit-logged actions list, and login_use_case.py
+already established the AuditLogger.record() call pattern this reuses.
 """
 
 from __future__ import annotations
@@ -14,6 +17,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import UTC, datetime
 
+from src.application.auth.audit_logger import AuditLogger
 from src.domain.auth.exceptions import InvalidTokenError, UserNotFoundError, WeakPasswordError
 from src.domain.auth.repositories import RefreshTokenRepository, UserRepository
 from src.domain.auth.value_objects import Email, PlaintextPassword, UserId
@@ -70,11 +74,13 @@ class ResetPasswordUseCase:
         refresh_token_repository: RefreshTokenRepository,
         token_store: VerificationTokenStore,
         password_hasher: Argon2PasswordHasher,
+        audit_logger: AuditLogger | None = None,
     ) -> None:
         self._user_repository = user_repository
         self._refresh_token_repository = refresh_token_repository
         self._token_store = token_store
         self._password_hasher = password_hasher
+        self._audit_logger = audit_logger
 
     async def execute(self, command: ResetPasswordCommand) -> UserId:
         new_password = PlaintextPassword(command.new_password)
@@ -100,5 +106,13 @@ class ResetPasswordUseCase:
         # refresh token also stops working immediately, not just on its
         # next (already-blocked-by-version-check) access token exchange.
         await self._refresh_token_repository.revoke_all_for_user(user.id, datetime.now(UTC))
+
+        if self._audit_logger is not None:
+            await self._audit_logger.record(
+                action="auth.password_change",
+                user_id=user.id,
+                resource_type="user",
+                resource_id=str(user.id),
+            )
 
         return user.id

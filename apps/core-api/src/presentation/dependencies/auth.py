@@ -7,6 +7,7 @@ injection" implementation directive) rather than a custom DI container.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import datetime
 from typing import Annotated
 
 from fastapi import Depends, HTTPException, status
@@ -16,7 +17,9 @@ from src.config import Settings, get_settings
 from src.domain.auth.entities import Role
 from src.domain.auth.exceptions import InvalidTokenError, TokenExpiredError
 from src.domain.auth.value_objects import UserId
+from src.infrastructure.persistence.redis.clients import RedisClients, get_redis_clients
 from src.infrastructure.security.jwt_provider import JwtProvider
+from src.infrastructure.security.token_blacklist import TokenBlacklist
 
 _bearer_scheme = HTTPBearer(auto_error=False)
 
@@ -33,6 +36,15 @@ class CurrentUser:
     user_id: UserId
     role: Role
     token_version: int
+    jti: str = ""
+    """Phase 8 addition — carried through so /logout can blacklist
+    exactly this access token's jti without re-parsing the raw bearer
+    token a second time."""
+    expires_at: datetime | None = None
+    """Phase 8 addition — needed to compute the remaining TTL to pass to
+    TokenBlacklist.add() (a blacklist entry's TTL must match how much
+    longer the token would have been valid for, never the token's full
+    original TTL)."""
 
 
 def get_jwt_provider(settings: Annotated[Settings, Depends(get_settings)]) -> JwtProvider:
@@ -49,9 +61,16 @@ def get_jwt_provider(settings: Annotated[Settings, Depends(get_settings)]) -> Jw
     )
 
 
+def get_token_blacklist(
+    redis_clients: Annotated[RedisClients, Depends(get_redis_clients)],
+) -> TokenBlacklist:
+    return TokenBlacklist(redis_clients.session)
+
+
 async def get_current_user(
     credentials: Annotated[HTTPAuthorizationCredentials | None, Depends(_bearer_scheme)],
     jwt_provider: Annotated[JwtProvider, Depends(get_jwt_provider)],
+    token_blacklist: Annotated[TokenBlacklist, Depends(get_token_blacklist)],
 ) -> CurrentUser:
     if credentials is None:
         raise HTTPException(
@@ -70,4 +89,13 @@ async def get_current_user(
             status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid access token"
         ) from exc
 
-    return CurrentUser(user_id=claims.user_id, role=claims.role, token_version=claims.token_version)
+    if await token_blacklist.is_blacklisted(claims.jti):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Access token has been revoked",
+        )
+
+    return CurrentUser(
+        user_id=claims.user_id, role=claims.role, token_version=claims.token_version,
+        jti=claims.jti, expires_at=claims.expires_at,
+    )
