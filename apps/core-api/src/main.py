@@ -44,7 +44,7 @@ from src.infrastructure.persistence.postgres.repositories.transaction_repository
 from src.infrastructure.persistence.postgres.repositories.watchlist_repository import (
     SqlAlchemyWatchlistRepository,
 )
-from src.infrastructure.persistence.postgres.session import get_session_factory
+from src.infrastructure.persistence.postgres.session import get_committing_session_scope
 from src.infrastructure.persistence.redis.clients import get_redis_clients
 from src.infrastructure.realtime.ai_prediction_streaming_service import (
     AiPredictionStreamingService,
@@ -111,7 +111,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     market_data_streaming_service = MarketDataStreamingService(
         connection_manager=get_connection_manager(),
         redis_broker=RedisBroker(get_redis_clients().broker),
-        session_scope=get_session_factory(),
+        session_scope=get_committing_session_scope,
         repository_factory=lambda session: (
             SqlAlchemyInstrumentRepository(session),  # type: ignore[arg-type]
             SqlAlchemyOhlcvBarRepository(session),  # type: ignore[arg-type]
@@ -147,7 +147,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     watchlist_streaming_service = WatchlistStreamingService(
         connection_manager=get_connection_manager(),
         redis_broker=RedisBroker(get_redis_clients().broker),
-        session_scope=get_session_factory(),
+        session_scope=get_committing_session_scope,
         dependency_factory=_watchlist_dependency_factory,
         poll_interval_seconds=settings.realtime_watchlist_poll_interval_seconds,
     )
@@ -171,7 +171,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     portfolio_streaming_service = PortfolioStreamingService(
         connection_manager=get_connection_manager(),
         redis_broker=RedisBroker(get_redis_clients().broker),
-        session_scope=get_session_factory(),
+        session_scope=get_committing_session_scope,
         dependency_factory=_portfolio_dependency_factory,
         poll_interval_seconds=settings.realtime_portfolio_poll_interval_seconds,
     )
@@ -221,7 +221,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 
     alert_evaluation_streaming_service = AlertEvaluationStreamingService(
         redis_broker=RedisBroker(get_redis_clients().broker),
-        session_scope=get_session_factory(),
+        session_scope=get_committing_session_scope,
         dependency_factory=_alert_dependency_factory,
     )
     alert_evaluation_streaming_service.start()
