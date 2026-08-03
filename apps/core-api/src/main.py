@@ -248,6 +248,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 
 def create_app() -> FastAPI:
     settings = get_settings()
+    print("CORS ORIGINS =", settings.cors_allowed_origins)
 
     app = FastAPI(
         title="INVEST IQ — core-api",
