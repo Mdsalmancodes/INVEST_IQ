@@ -19,14 +19,15 @@ import { useAuthStore } from "../../../store/auth-store";
 export default function AIInsightsPage() {
   const router = useRouter();
   const isAuthenticated = useAuthStore((state) => state.isAuthenticated);
+  const isBootstrapping = useAuthStore((state) => state.isBootstrapping);
 
   useEffect(() => {
-    if (!isAuthenticated) {
+    if (!isBootstrapping && !isAuthenticated) {
       router.replace("/login?redirectTo=%2Fdashboard%2Fai");
     }
-  }, [isAuthenticated, router]);
+  }, [isAuthenticated, isBootstrapping, router]);
 
-  if (!isAuthenticated) {
+  if (isBootstrapping || !isAuthenticated) {
     return null;
   }
 

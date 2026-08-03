@@ -19,6 +19,9 @@ from src.presentation.internal_auth_middleware import InternalServiceAuthMiddlew
 from src.presentation.routers.health_router import router as health_router
 from src.presentation.routers.metrics_router import router as metrics_router
 from src.presentation.routers.ml_router import router as ml_router
+from src.presentation.routers.portfolio_intelligence_router import (
+    router as portfolio_intelligence_router,
+)
 
 logger = get_logger(__name__)
 
@@ -41,6 +44,7 @@ def create_app() -> FastAPI:
     app.add_middleware(InternalServiceAuthMiddleware)
     app.include_router(health_router)
     app.include_router(ml_router)
+    app.include_router(portfolio_intelligence_router)
     app.include_router(metrics_router)
     return app
 

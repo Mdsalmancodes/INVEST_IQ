@@ -37,7 +37,7 @@ from datetime import date, timedelta
 import numpy as np
 import pandas as pd
 
-from src.domain.ml.repositories import MarketDataRepository
+from src.domain.ml.repositories import MarketDataRepository, OhlcvBar
 
 _TRADING_DAYS_PER_YEAR = 252
 
@@ -84,6 +84,7 @@ async def fetch_holdings_returns(
     market_data_repository: MarketDataRepository,
     holdings: list[PortfolioHoldingInput],
     lookback_days: int = 400,
+    bars_out: dict[str, tuple[OhlcvBar, ...]] | None = None,
 ) -> PortfolioReturnsData:
     """Fetches OHLCV history for every holding via the EXISTING
     MarketDataRepository Protocol and computes each symbol's daily
@@ -96,6 +97,15 @@ async def fetch_holdings_returns(
     "holdings_missing_price" pattern (Phase 3, core-api) for the exact
     same underlying reason: one holding's data gap must never corrupt
     every other holding's own well-formed calculation.
+
+    `bars_out`, if supplied, is populated (keyed by uppercased symbol)
+    with the RAW OhlcvBar tuples fetched for each holding — added so
+    PortfolioIntelligenceUseCase can obtain the same raw bars
+    AiPortfolioEngineService.compute() needs (a full OHLCV history, not
+    just the derived daily-return Series this function returns) from
+    this SAME fetch, rather than fetching every holding's history twice.
+    Optional and defaulted to None so every existing caller (this
+    function's original signature) is unaffected.
     """
     total_market_value = sum(h.market_value for h in holdings)
     end = date.today()
@@ -114,14 +124,17 @@ async def fetch_holdings_returns(
         if daily_returns.empty:
             continue
         weight = holding.market_value / total_market_value if total_market_value > 0 else 0.0
+        symbol = holding.symbol.upper()
         results.append(
             HoldingReturns(
-                symbol=holding.symbol.upper(),
+                symbol=symbol,
                 weight=weight,
                 sector=holding.sector,
                 daily_returns=daily_returns,
             )
         )
+        if bars_out is not None:
+            bars_out[symbol] = bars
 
     return PortfolioReturnsData(holdings=tuple(results), total_market_value=total_market_value)
 

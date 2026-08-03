@@ -20,16 +20,17 @@ export default function WatchlistDetailPage() {
   const params = useParams<{ id: string }>();
   const watchlistId = params.id;
   const isAuthenticated = useAuthStore((state) => state.isAuthenticated);
+  const isBootstrapping = useAuthStore((state) => state.isBootstrapping);
   const { data: watchlist, isLoading, isError, error } = useWatchlist(watchlistId);
   const [isAddSymbolOpen, setIsAddSymbolOpen] = useState(false);
 
   useEffect(() => {
-    if (!isAuthenticated) {
+    if (!isBootstrapping && !isAuthenticated) {
       router.replace(`/login?redirectTo=%2Fdashboard%2Fwatchlists%2F${watchlistId}`);
     }
-  }, [isAuthenticated, router, watchlistId]);
+  }, [isAuthenticated, isBootstrapping, router, watchlistId]);
 
-  if (!isAuthenticated) {
+  if (isBootstrapping || !isAuthenticated) {
     return null;
   }
 

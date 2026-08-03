@@ -13,24 +13,13 @@ describe("authApi.logoutCurrentSession", () => {
     global.fetch = originalFetch;
   });
 
-  it("does nothing if there is no refresh token in memory (never logged in this session)", async () => {
-    await authApi.logoutCurrentSession("some-access-token");
-    expect(global.fetch).not.toHaveBeenCalled();
-  });
-
-  it("sends the Authorization header with the given access token when a refresh token is held", async () => {
-    // Populate the module-level refresh token via a real login call first.
-    vi.mocked(global.fetch).mockResolvedValueOnce({
-      ok: true,
-      status: 200,
-      json: async () => ({
-        access_token: "initial-access-token",
-        refresh_token: "held-refresh-token",
-        token_type: "bearer",
-      }),
-    } as Response);
-    await authApi.login({ email: "user@example.com", password: "correct-horse-battery-staple" });
-
+  it("calls the BFF logout route (same-origin, credentials included) with the given access token as a Bearer header", async () => {
+    // logoutCurrentSession now always calls the BFF's /api/bff/logout
+    // route handler — it holds no refresh-token state of its own
+    // (the refresh token lives exclusively server-side, in the httpOnly
+    // cookie app/api/bff/logout/route.ts reads directly). The BFF route
+    // itself decides whether there's anything to revoke server-side;
+    // this client-side call is unconditional.
     vi.mocked(global.fetch).mockResolvedValueOnce({
       ok: true,
       status: 204,
@@ -39,11 +28,11 @@ describe("authApi.logoutCurrentSession", () => {
 
     await authApi.logoutCurrentSession("current-access-token");
 
-    const logoutCall = vi.mocked(global.fetch).mock.calls.find(([url]) =>
-      String(url).includes("/api/v1/auth/logout")
-    );
-    expect(logoutCall).toBeDefined();
-    const [, options] = logoutCall ?? [];
+    expect(global.fetch).toHaveBeenCalledTimes(1);
+    const call = vi.mocked(global.fetch).mock.calls[0];
+    const [url, options] = call ?? [];
+    expect(String(url)).toBe("/api/bff/logout");
+    expect(options?.credentials).toBe("include");
     expect((options?.headers as Record<string, string>).Authorization).toBe(
       "Bearer current-access-token"
     );

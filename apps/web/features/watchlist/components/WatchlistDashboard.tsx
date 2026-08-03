@@ -2,6 +2,7 @@
 
 import { useState } from "react";
 
+import { MagneticButton } from "../../dashboard-shell/components/MagneticButton";
 import { useWatchlist } from "../hooks/useWatchlists";
 import { CreateWatchlistDialog } from "./CreateWatchlistDialog";
 import { EditWatchlistDialog } from "./EditWatchlistDialog";
@@ -26,13 +27,7 @@ export function WatchlistDashboard({ onSelectWatchlist }: WatchlistDashboardProp
     <div className="flex flex-col gap-4">
       <div className="flex items-center justify-between">
         <h1 className="text-2xl font-semibold text-text-primary">Watchlists</h1>
-        <button
-          type="button"
-          onClick={() => setIsCreateOpen(true)}
-          className="rounded-md bg-primary px-4 py-2 text-sm font-medium text-white"
-        >
-          New Watchlist
-        </button>
+        <MagneticButton onClick={() => setIsCreateOpen(true)}>New Watchlist</MagneticButton>
       </div>
 
       <WatchlistCards

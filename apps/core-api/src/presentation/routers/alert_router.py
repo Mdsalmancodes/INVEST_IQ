@@ -29,6 +29,7 @@ from src.application.alerts.get_alert_use_case import (
 from src.application.alerts.update_alert_use_case import UpdateAlertCommand, UpdateAlertUseCase
 from src.domain.alerts.entities import Alert
 from src.domain.alerts.exceptions import AlertDomainError
+from src.domain.alerts.repositories import AlertSortField, SortDirection
 from src.domain.alerts.value_objects import AlertId
 from src.domain.market_data.exceptions import MarketDataDomainError
 from src.presentation.alert_exception_handlers import raise_alert_exception_as_http
@@ -106,8 +107,8 @@ async def list_alerts(
     current_user: Annotated[CurrentUser, Depends(get_current_user)],
     use_case: Annotated[ListAlertsUseCase, Depends(get_list_alerts_use_case)],
     is_active: Annotated[bool | None, Query()] = None,
-    sort_by: Annotated[str, Query()] = "created_at",
-    sort_direction: Annotated[str, Query()] = "desc",
+    sort_by: Annotated[AlertSortField, Query()] = "created_at",
+    sort_direction: Annotated[SortDirection, Query()] = "desc",
     page: Annotated[int, Query(ge=1)] = 1,
     page_size: Annotated[int, Query(ge=1, le=100)] = 20,
 ) -> AlertListResponse:
@@ -115,8 +116,8 @@ async def list_alerts(
         ListAlertsQuery(
             user_id=str(current_user.user_id),
             is_active=is_active,
-            sort_by=sort_by,  # type: ignore[arg-type]
-            sort_direction=sort_direction,  # type: ignore[arg-type]
+            sort_by=sort_by,
+            sort_direction=sort_direction,
             page=page,
             page_size=page_size,
         )

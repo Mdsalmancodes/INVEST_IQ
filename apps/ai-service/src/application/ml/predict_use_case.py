@@ -16,6 +16,7 @@ response.
 
 from __future__ import annotations
 
+import asyncio
 from dataclasses import dataclass
 from datetime import date, timedelta
 
@@ -76,7 +77,18 @@ class PredictUseCase:
             index=pd.DatetimeIndex([b.bar_time for b in bars]),
         )
 
-        result = self._decision_engine.decide(command.symbol, ohlcv, command.news_texts)
+        # DecisionEngine.decide() synchronously trains up to 5 models
+        # (LSTM/ARIMA/Prophet/RandomForest/XGBoost) — genuinely CPU-bound
+        # work that would otherwise block this coroutine's event loop for
+        # the full training duration on every /predict and /recommendation
+        # call, starving every other concurrent request this ai-service
+        # instance is serving. asyncio.to_thread() runs it on the default
+        # executor's worker thread pool instead, keeping the event loop
+        # free. This is a request-latency/concurrency fix only — it does
+        # not change decide()'s inputs, outputs, or exception behavior.
+        result = await asyncio.to_thread(
+            self._decision_engine.decide, command.symbol, ohlcv, command.news_texts
+        )
         await self._prediction_run_repository.save(_to_prediction_run(result))
         return result
 

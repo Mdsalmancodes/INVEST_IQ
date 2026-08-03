@@ -42,6 +42,9 @@ export function PriceChart({ points }: PriceChartProps) {
   useEffect(() => {
     if (!containerRef.current) return;
 
+    // Responsive height — same rationale/breakpoint as OhlcvChart.tsx.
+    const getResponsiveHeight = () => (window.innerWidth < 640 ? 180 : 240);
+
     const chart = createChart(containerRef.current, {
       layout: {
         background: { type: ColorType.Solid, color: "transparent" },
@@ -52,7 +55,7 @@ export function PriceChart({ points }: PriceChartProps) {
         horzLines: { color: "rgba(100, 116, 139, 0.1)" },
       },
       width: containerRef.current.clientWidth,
-      height: 240,
+      height: getResponsiveHeight(),
     });
     const series = chart.addSeries(LineSeries, {
       color: "#6c3bff",
@@ -64,7 +67,10 @@ export function PriceChart({ points }: PriceChartProps) {
 
     const handleResize = () => {
       if (containerRef.current) {
-        chart.applyOptions({ width: containerRef.current.clientWidth });
+        chart.applyOptions({
+          width: containerRef.current.clientWidth,
+          height: getResponsiveHeight(),
+        });
       }
     };
     window.addEventListener("resize", handleResize);

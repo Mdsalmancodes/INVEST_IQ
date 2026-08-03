@@ -43,6 +43,18 @@ interface AuthState {
   accessToken: string | null;
   isAuthenticated: boolean;
   /**
+   * Post-launch addition — true until useSilentSessionBootstrap's
+   * initial /api/bff/refresh attempt resolves (success or failure), then
+   * permanently false for the rest of this page load. Exists so a page's
+   * own `if (!isAuthenticated) redirect` guard can distinguish "still
+   * checking whether a session cookie exists" from "definitely logged
+   * out" — without this flag, every full-page reload of a /dashboard/*
+   * route would flash-redirect to /login during the brief window before
+   * the silent refresh resolves, even for a valid, still-logged-in user,
+   * since isAuthenticated is false-by-default until setAccessToken runs.
+   */
+  isBootstrapping: boolean;
+  /**
    * Phase 8 addition — the current user's id/role, decoded client-side
    * from the access token's own claims (lib/jwt.ts's decodeAccessToken,
    * no signature verification, UI-rendering purposes only; see that
@@ -61,6 +73,8 @@ interface AuthState {
   expiresAt: number | null;
   setAccessToken: (accessToken: string) => void;
   clearSession: () => void;
+  /** Post-launch addition — marks the initial session-bootstrap attempt as finished; see isBootstrapping's own docstring. */
+  finishBootstrapping: () => void;
   /** Phase 8 addition — true if the current user's role is one of `roles`. False when logged out or role is unknown. */
   hasRole: (roles: Role[]) => boolean;
 }
@@ -68,6 +82,7 @@ interface AuthState {
 export const useAuthStore = create<AuthState>((set, get) => ({
   accessToken: null,
   isAuthenticated: false,
+  isBootstrapping: true,
   user: null,
   expiresAt: null,
   setAccessToken: (accessToken) => {
@@ -75,11 +90,20 @@ export const useAuthStore = create<AuthState>((set, get) => ({
     set({
       accessToken,
       isAuthenticated: true,
+      isBootstrapping: false,
       user: decoded ? { userId: decoded.userId, role: decoded.role } : null,
       expiresAt: decoded?.expiresAt ?? null,
     });
   },
-  clearSession: () => set({ accessToken: null, isAuthenticated: false, user: null, expiresAt: null }),
+  clearSession: () =>
+    set({
+      accessToken: null,
+      isAuthenticated: false,
+      isBootstrapping: false,
+      user: null,
+      expiresAt: null,
+    }),
+  finishBootstrapping: () => set({ isBootstrapping: false }),
   hasRole: (roles) => {
     const currentUser = get().user;
     return currentUser !== null && roles.includes(currentUser.role);

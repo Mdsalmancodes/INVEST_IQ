@@ -32,6 +32,8 @@ from src.presentation.dependencies.ai_proxy_use_cases import get_ai_service_clie
 from src.presentation.dependencies.auth import CurrentUser, get_current_user
 from src.presentation.dependencies.rbac import require_role
 from src.presentation.dto.ai_proxy_dto import (
+    MonteCarloRequest,
+    PortfolioIntelligenceRequest,
     PortfolioRecommendationRequest,
     PredictRequest,
     SentimentAnalysisRequest,
@@ -101,6 +103,34 @@ async def get_portfolio_recommendation(
     client: Annotated[AiServiceClient, Depends(get_ai_service_client)],
 ) -> dict[str, object]:
     result = await client.get_portfolio_recommendation(body.model_dump())
+    return _forward(response, result)
+
+
+@router.post("/portfolio-intelligence/analyze")
+async def analyze_portfolio_intelligence(
+    body: PortfolioIntelligenceRequest,
+    response: Response,
+    current_user: Annotated[CurrentUser, Depends(get_current_user)],
+    client: Annotated[AiServiceClient, Depends(get_ai_service_client)],
+) -> dict[str, object]:
+    """Phase 10 AI Portfolio Intelligence — Analytics, Risk Metrics, AI
+    Portfolio Engine predictions, MPT Optimization, and the AI
+    Recommendation Engine, all in one call (matching ai-service's own
+    combined response shape). Authenticated like every other AI proxy
+    endpoint above — not admin-only, since this is a user-facing
+    portfolio insight feature, not a model-management action."""
+    result = await client.analyze_portfolio_intelligence(body.model_dump())
+    return _forward(response, result)
+
+
+@router.post("/portfolio-intelligence/monte-carlo")
+async def run_monte_carlo_simulation(
+    body: MonteCarloRequest,
+    response: Response,
+    current_user: Annotated[CurrentUser, Depends(get_current_user)],
+    client: Annotated[AiServiceClient, Depends(get_ai_service_client)],
+) -> dict[str, object]:
+    result = await client.run_monte_carlo_simulation(body.model_dump())
     return _forward(response, result)
 
 

@@ -1,6 +1,6 @@
 "use client";
 
-import { Button, Card } from "@investiq/ui";
+import { Card } from "@investiq/ui";
 import { createPortfolioSchema, type CreatePortfolioFormValues } from "@investiq/validation";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { motion } from "motion/react";
@@ -12,6 +12,7 @@ import { useForm } from "react-hook-form";
 import { ApiError } from "../../../lib/auth-api";
 import { useAuthStore } from "../../../store/auth-store";
 import { useCreatePortfolio, usePortfolios } from "../../../features/portfolio/hooks/usePortfolios";
+import { MagneticButton } from "../../../features/dashboard-shell/components/MagneticButton";
 
 /**
  * Portfolio list dashboard — Document 8 §24's roadmap target for Phase 3.
@@ -24,6 +25,7 @@ import { useCreatePortfolio, usePortfolios } from "../../../features/portfolio/h
 export default function PortfoliosPage() {
   const router = useRouter();
   const isAuthenticated = useAuthStore((state) => state.isAuthenticated);
+  const isBootstrapping = useAuthStore((state) => state.isBootstrapping);
   const { data, isLoading, isError, error } = usePortfolios();
   const createPortfolio = useCreatePortfolio();
   const [serverError, setServerError] = useState<string | null>(null);
@@ -40,12 +42,18 @@ export default function PortfoliosPage() {
   });
 
   useEffect(() => {
-    if (!isAuthenticated) {
+    // isBootstrapping guards against a flash-redirect on every full-page
+    // reload: useSilentSessionBootstrap (app/providers.tsx) needs one
+    // async round-trip to /api/bff/refresh to restore isAuthenticated
+    // from the httpOnly refresh-token cookie — without this check, this
+    // effect would redirect to /login during that brief window even for
+    // an already-logged-in user, on every reload.
+    if (!isBootstrapping && !isAuthenticated) {
       router.replace("/login?redirectTo=%2Fdashboard%2Fportfolios");
     }
-  }, [isAuthenticated, router]);
+  }, [isAuthenticated, isBootstrapping, router]);
 
-  if (!isAuthenticated) {
+  if (isBootstrapping || !isAuthenticated) {
     return null;
   }
 
@@ -69,9 +77,9 @@ export default function PortfoliosPage() {
       <div className="mx-auto max-w-4xl">
         <div className="flex items-center justify-between">
           <h1 className="text-2xl font-semibold text-text-primary">Your Portfolios</h1>
-          <Button onClick={() => setShowCreateForm((v) => !v)}>
+          <MagneticButton onClick={() => setShowCreateForm((v) => !v)}>
             {showCreateForm ? "Cancel" : "New Portfolio"}
-          </Button>
+          </MagneticButton>
         </div>
 
         {showCreateForm && (
@@ -80,7 +88,7 @@ export default function PortfoliosPage() {
             animate={{ opacity: 1, height: "auto" }}
             onSubmit={handleSubmit(onCreate)}
             noValidate
-            className="mt-4 flex flex-col gap-3 rounded-lg border border-primary-100 bg-surface p-4"
+            className="glass mt-4 flex flex-col gap-3 rounded-lg p-4"
           >
             <div className="flex flex-col gap-1">
               <label htmlFor="name" className="text-sm font-medium text-text-primary">
@@ -104,9 +112,9 @@ export default function PortfoliosPage() {
                 {serverError}
               </p>
             )}
-            <Button type="submit" disabled={isSubmitting} className="self-end">
+            <MagneticButton type="submit" disabled={isSubmitting} className="self-end">
               {isSubmitting ? "Creating…" : "Create Portfolio"}
-            </Button>
+            </MagneticButton>
           </motion.form>
         )}
 
@@ -137,17 +145,24 @@ export default function PortfoliosPage() {
 
           {data && data.items.length > 0 && (
             <div className="flex flex-col gap-3">
-              {data.items.map((portfolio) => (
-                <Link key={portfolio.id} href={`/dashboard/portfolios/${portfolio.id}`}>
-                  <Card className="flex items-center justify-between transition-shadow hover:shadow-md">
-                    <div>
-                      <p className="font-medium text-text-primary">{portfolio.name}</p>
-                      <p className="text-sm text-text-secondary">
-                        {portfolio.base_currency} · {portfolio.is_paper ? "Paper" : "Live"}
-                      </p>
-                    </div>
-                  </Card>
-                </Link>
+              {data.items.map((portfolio, index) => (
+                <motion.div
+                  key={portfolio.id}
+                  initial={{ opacity: 0, y: 12 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  transition={{ duration: 0.3, delay: index * 0.05 }}
+                >
+                  <Link href={`/dashboard/portfolios/${portfolio.id}`}>
+                    <Card className="flex items-center justify-between transition-all duration-300 hover:-translate-y-0.5 hover:shadow-lg">
+                      <div>
+                        <p className="font-medium text-text-primary">{portfolio.name}</p>
+                        <p className="text-sm text-text-secondary">
+                          {portfolio.base_currency} · {portfolio.is_paper ? "Paper" : "Live"}
+                        </p>
+                      </div>
+                    </Card>
+                  </Link>
+                </motion.div>
               ))}
             </div>
           )}

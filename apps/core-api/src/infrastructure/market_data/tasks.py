@@ -46,7 +46,7 @@ from src.infrastructure.persistence.postgres.repositories.instrument_repository 
 from src.infrastructure.persistence.postgres.repositories.ohlcv_bar_repository import (
     SqlAlchemyOhlcvBarRepository,
 )
-from src.infrastructure.persistence.postgres.session import get_session_factory
+from src.infrastructure.persistence.postgres.session import get_committing_session_scope
 
 logger = get_logger(__name__)
 
@@ -118,8 +118,7 @@ async def run_sync_pipeline(
 
 
 async def _sync_instrument_bars_async(symbol: str) -> int:
-    session_factory = get_session_factory()
-    async with session_factory() as session:
+    async with get_committing_session_scope() as session:
         instrument_repository = SqlAlchemyInstrumentRepository(session)
         ohlcv_bar_repository = SqlAlchemyOhlcvBarRepository(session)
         validation_service = MarketDataValidationService()
@@ -139,7 +138,12 @@ async def _sync_instrument_bars_async(symbol: str) -> int:
         count = await run_sync_pipeline(
             symbol, instrument_repository, ohlcv_bar_repository, router, validation_service
         )
-        await session.commit()
+        # No explicit session.commit() here — get_committing_session_scope()
+        # commits automatically on successful exit from this `async with`
+        # block (and rolls back on any exception), matching every other
+        # write path in the codebase. The previous explicit commit() call
+        # (with no matching except/rollback) was inconsistent with that
+        # centralized commit/rollback discipline.
         return count
 
 

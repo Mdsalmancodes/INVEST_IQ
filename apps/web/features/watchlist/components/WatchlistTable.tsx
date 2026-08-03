@@ -1,6 +1,7 @@
 "use client";
 
 import { Card } from "@investiq/ui";
+import { watchlistTickSchema } from "@investiq/validation";
 import { useQueryClient } from "@tanstack/react-query";
 import Link from "next/link";
 import { useEffect } from "react";
@@ -65,22 +66,9 @@ export function WatchlistTable({ watchlistId }: WatchlistTableProps) {
 
   useEffect(() => {
     return subscribe("watchlist", (envelope) => {
-      const tick = envelope.data as
-        | {
-            watchlist_id: string;
-            market_status: string | null;
-            items: Array<{
-              item_id: string;
-              price: string | null;
-              previous_close: string | null;
-              daily_change: string | null;
-              daily_change_pct: string | null;
-              is_delayed: boolean;
-              error: string | null;
-            }>;
-          }
-        | undefined;
-      if (!tick || tick.watchlist_id !== watchlistId) return;
+      const parsed = watchlistTickSchema.safeParse(envelope.data);
+      if (!parsed.success || parsed.data.watchlist_id !== watchlistId) return;
+      const tick = parsed.data;
 
       queryClient.setQueryData<WatchlistResponse>(
         watchlistKeys.detail(watchlistId),
@@ -195,6 +183,7 @@ export function WatchlistTable({ watchlistId }: WatchlistTableProps) {
                   <button
                     type="button"
                     aria-pressed={item.is_pinned}
+                    aria-label={item.is_pinned ? "Unpin from top" : "Pin to top"}
                     onClick={() =>
                       updateItem.mutate({
                         itemId: item.id,

@@ -125,3 +125,71 @@ class MockAiServiceClient:
             status_code=404,
             body={"detail": "AI_SERVICE_MODE=mock — no model registry is available."},
         )
+
+    # --- Phase 10 (AI Portfolio Intelligence) ---
+
+    async def analyze_portfolio_intelligence(self, payload: dict[str, Any]) -> AiServiceResponse:
+        symbols = [h.get("symbol", "MOCK") for h in payload.get("holdings", [])]
+        return AiServiceResponse(
+            status_code=200,
+            body={
+                "analytics": {
+                    "health_score": 0.0,
+                    "diversification_score": 0.0,
+                    "risk_score": 0.0,
+                    "sector_exposure": [],
+                    "asset_allocation": [],
+                    "concentration_risk": 0.0,
+                    "correlation_matrix": {"symbols": symbols, "matrix": []},
+                    "historical_performance": [],
+                    "daily_return_pct": None,
+                    "weekly_return_pct": None,
+                    "monthly_return_pct": None,
+                    "cagr_pct": None,
+                    "annualized_return_pct": 0.0,
+                    "annualized_volatility_pct": 0.0,
+                },
+                "risk_metrics": {
+                    "sharpe_ratio": None,
+                    "sortino_ratio": None,
+                    "treynor_ratio": None,
+                    "alpha_pct": None,
+                    "beta": None,
+                    "standard_deviation_pct": 0.0,
+                    "max_drawdown_pct": 0.0,
+                    "drawdown_series": [],
+                    "value_at_risk_95_pct": None,
+                    "conditional_value_at_risk_95_pct": None,
+                    "expected_shortfall_95_pct": None,
+                },
+                "ai_predictions": {
+                    "expected_return_pct": 0.0,
+                    "portfolio_risk_prediction": 0.0,
+                    "investment_health_prediction": 0.0,
+                    "market_exposure_pct": 50.0,
+                    "sector_risk": [],
+                    "portfolio_stability_score": 0.0,
+                    "portfolio_confidence_score": 0.0,
+                },
+                "optimization": None,
+                "recommendations": [],
+            },
+        )
+
+    async def run_monte_carlo_simulation(self, payload: dict[str, Any]) -> AiServiceResponse:
+        starting_value = sum(
+            h.get("market_value", 0.0) for h in payload.get("holdings", [])
+        )
+        return AiServiceResponse(
+            status_code=200,
+            body={
+                "num_runs": payload.get("num_runs", 100),
+                "horizon_days": payload.get("horizon_days", 252),
+                "starting_value": starting_value,
+                "confidence_intervals": [],
+                "final_value_distribution": [],
+                "worst_case_value": starting_value,
+                "expected_case_value": starting_value,
+                "best_case_value": starting_value,
+            },
+        )

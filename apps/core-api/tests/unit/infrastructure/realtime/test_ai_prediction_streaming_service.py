@@ -83,6 +83,12 @@ class FakeAiServiceClient:
     async def delete_model(self, model_version_id: str) -> AiServiceResponse:
         raise NotImplementedError
 
+    async def analyze_portfolio_intelligence(self, payload: dict[str, Any]) -> AiServiceResponse:
+        raise NotImplementedError
+
+    async def run_monte_carlo_simulation(self, payload: dict[str, Any]) -> AiServiceResponse:
+        raise NotImplementedError
+
 
 def _build_service(
     manager: ConnectionManager, broker: FakeRedisBroker, ai_client: FakeAiServiceClient

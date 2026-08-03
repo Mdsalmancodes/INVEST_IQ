@@ -12,8 +12,10 @@ instructions.
 
 from __future__ import annotations
 
+import asyncio
 from dataclasses import dataclass
 from datetime import date, timedelta
+from typing import Any
 
 import numpy as np
 import pandas as pd
@@ -70,31 +72,15 @@ class ForecastUseCase:
 
         close = pd.Series([b.close for b in bars])
         dates = np.array([b.bar_time for b in bars])
-        n_rows = len(close)
 
-        forecasts: list[Forecast] = []
-        excluded: list[str] = []
-
-        if LstmModel.has_sufficient_history(n_rows):
-            self._lstm.train(close.to_numpy())
-            predictions = self._lstm.predict_next(close.to_numpy()[-60:], steps_ahead=30)
-            forecasts.append(_build_forecast(command.symbol, "lstm", predictions))
-        else:
-            excluded.append("lstm")
-
-        if ArimaModel.has_sufficient_history(n_rows):
-            self._arima.train(close.to_numpy())
-            predictions = self._arima.predict_next(steps_ahead=30)
-            forecasts.append(_build_forecast(command.symbol, "arima", predictions))
-        else:
-            excluded.append("arima")
-
-        if ProphetModel.has_sufficient_history(n_rows) and prophet_is_available():
-            self._prophet.train(dates, close.to_numpy())
-            predictions = self._prophet.predict_next(steps_ahead=30)
-            forecasts.append(_build_forecast(command.symbol, "prophet", predictions))
-        else:
-            excluded.append("prophet")
+        # _run_forecasting_models() synchronously trains LSTM/ARIMA/Prophet
+        # — genuinely CPU-bound work (same rationale as DecisionEngine.
+        # decide()'s identical fix in predict_use_case.py) that would
+        # otherwise block this coroutine's event loop for the full
+        # training duration.
+        forecasts, excluded = await asyncio.to_thread(
+            self._run_forecasting_models, command.symbol, close, dates
+        )
 
         if not forecasts:
             raise InsufficientDataError(
@@ -107,6 +93,36 @@ class ForecastUseCase:
             member_forecasts=tuple(forecasts),
             excluded_models=tuple(excluded),
         )
+
+    def _run_forecasting_models(
+        self, symbol: str, close: pd.Series, dates: np.ndarray[Any, np.dtype[Any]]
+    ) -> tuple[list[Forecast], list[str]]:
+        n_rows = len(close)
+        forecasts: list[Forecast] = []
+        excluded: list[str] = []
+
+        if LstmModel.has_sufficient_history(n_rows):
+            self._lstm.train(close.to_numpy())
+            predictions = self._lstm.predict_next(close.to_numpy()[-60:], steps_ahead=30)
+            forecasts.append(_build_forecast(symbol, "lstm", predictions))
+        else:
+            excluded.append("lstm")
+
+        if ArimaModel.has_sufficient_history(n_rows):
+            self._arima.train(close.to_numpy())
+            predictions = self._arima.predict_next(steps_ahead=30)
+            forecasts.append(_build_forecast(symbol, "arima", predictions))
+        else:
+            excluded.append("arima")
+
+        if ProphetModel.has_sufficient_history(n_rows) and prophet_is_available():
+            self._prophet.train(dates, close.to_numpy())
+            predictions = self._prophet.predict_next(steps_ahead=30)
+            forecasts.append(_build_forecast(symbol, "prophet", predictions))
+        else:
+            excluded.append("prophet")
+
+        return forecasts, excluded
 
 
 def _build_forecast(symbol: str, model_family: str, predictions: list[float]) -> Forecast:

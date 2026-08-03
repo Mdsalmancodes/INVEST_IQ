@@ -10,9 +10,7 @@ export default function AuthLayout({ children }: { children: React.ReactNode }) 
         <div className="mb-8 flex flex-col items-center gap-2 text-center">
           <span className="text-2xl font-bold text-primary">INVEST IQ</span>
         </div>
-        <div className="rounded-xl border border-primary-100 bg-surface p-8 shadow-sm">
-          {children}
-        </div>
+        <div className="glass rounded-xl p-8">{children}</div>
       </div>
     </main>
   );

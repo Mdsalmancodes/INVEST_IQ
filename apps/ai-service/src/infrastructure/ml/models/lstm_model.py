@@ -29,6 +29,13 @@ MINIMUM_HISTORY_DAYS = 90
 which LSTM is excluded from the ensemble entirely."""
 
 
+_RANDOM_SEED = 42
+"""Matches RandomForestModel/XgboostModel's random_state=42 — pinned here
+too for training reproducibility parity across all 3 model families that
+have a meaningful source of randomness (tree-based models' bootstrap
+sampling, LSTM's weight initialization/training dynamics)."""
+
+
 class _LstmNet(nn.Module):
     def __init__(self, hidden_size: int = 32, num_layers: int = 1) -> None:
         super().__init__()
@@ -90,6 +97,8 @@ class LstmModel:
                 f"LSTM training requires at least {LOOKBACK_WINDOW + 10} rows, "
                 f"got {len(close_prices)}"
             )
+
+        torch.manual_seed(_RANDOM_SEED)
 
         self._price_mean = float(np.mean(close_prices))
         self._price_std = float(np.std(close_prices)) or 1.0

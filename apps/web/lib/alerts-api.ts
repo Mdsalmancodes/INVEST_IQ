@@ -5,46 +5,7 @@
  * Watchlist's contrast with Market Data's public design.
  */
 
-import { useAuthStore } from "../store/auth-store";
-import { ApiError, type ApiErrorPayload } from "./auth-api";
-
-const API_BASE_URL = process.env.NEXT_PUBLIC_API_BASE_URL ?? "http://localhost:8001";
-
-async function authorizedRequest<TResponse>(
-  path: string,
-  options: RequestInit = {}
-): Promise<TResponse> {
-  const accessToken = useAuthStore.getState().accessToken;
-  if (!accessToken) {
-    throw new ApiError("NOT_AUTHENTICATED", "No active session", 401);
-  }
-
-  const response = await fetch(`${API_BASE_URL}${path}`, {
-    ...options,
-    headers: {
-      "Content-Type": "application/json",
-      Authorization: `Bearer ${accessToken}`,
-      ...options.headers,
-    },
-  });
-
-  if (response.status === 204) {
-    return undefined as TResponse;
-  }
-
-  const body = await response.json();
-
-  if (!response.ok) {
-    const detail =
-      typeof body?.detail === "string"
-        ? body.detail
-        : ((body as ApiErrorPayload)?.error?.message ?? "Request failed");
-    const code = (body as ApiErrorPayload)?.error?.code ?? "REQUEST_FAILED";
-    throw new ApiError(code, detail, response.status);
-  }
-
-  return body as TResponse;
-}
+import { authorizedRequest, buildQueryString } from "./api-client-helpers";
 
 export type ConditionType = "price_above" | "price_below" | "pct_change" | "rsi_threshold";
 
@@ -91,18 +52,6 @@ export interface ListAlertsParams {
   sortDirection?: "asc" | "desc";
   page?: number;
   pageSize?: number;
-}
-
-function buildQueryString(
-  params: Record<string, string | number | boolean | undefined>
-): string {
-  const searchParams = new URLSearchParams();
-  for (const [key, value] of Object.entries(params)) {
-    if (value === undefined) continue;
-    searchParams.append(key, String(value));
-  }
-  const query = searchParams.toString();
-  return query ? `?${query}` : "";
 }
 
 export const alertsApi = {

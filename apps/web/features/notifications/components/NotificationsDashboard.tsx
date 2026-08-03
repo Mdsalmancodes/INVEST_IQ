@@ -27,7 +27,7 @@ export function NotificationsDashboard() {
       </div>
 
       {showPreferences && (
-        <div className="rounded-lg border border-primary-100 bg-surface p-4">
+        <div className="glass rounded-lg p-4">
           <NotificationPreferencesForm />
         </div>
       )}

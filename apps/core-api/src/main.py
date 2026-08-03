@@ -21,6 +21,7 @@ from src.application.market_data.get_market_status_use_case import GetMarketStat
 from src.application.portfolio.calculation_service import PortfolioCalculationService
 from src.application.watchlist.enrichment_service import WatchlistEnrichmentService
 from src.config import get_settings
+from src.infrastructure.http.ai_service_http_client import get_ai_service_http_client
 from src.infrastructure.market_data.cache import MarketDataCache
 from src.infrastructure.market_data.real_price_provider import RealPriceProvider
 from src.infrastructure.persistence.postgres.repositories.alert_repository import (
@@ -236,6 +237,12 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 
     await market_data_streaming_service.stop()
     await realtime_service.stop()
+    # Only close if get_ai_service_http_client() was ever actually called
+    # (AI_SERVICE_MODE=live) — calling it here unconditionally would
+    # instantiate a brand-new, unused httpx.AsyncClient in mock mode just
+    # to immediately close it.
+    if get_ai_service_http_client.cache_info().currsize > 0:
+        await get_ai_service_http_client().aclose()
     logger.info("service.shutdown")
 
 

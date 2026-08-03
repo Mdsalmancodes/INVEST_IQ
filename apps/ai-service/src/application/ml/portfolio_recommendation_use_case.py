@@ -19,6 +19,7 @@ Portfolio module.
 
 from __future__ import annotations
 
+import asyncio
 from dataclasses import dataclass
 from datetime import date, timedelta
 
@@ -92,7 +93,15 @@ class PortfolioRecommendationUseCase:
                     "volume": [b.volume for b in bars],
                 }
             )
-            decision = self._decision_engine.decide(holding.symbol, ohlcv)
+            # See predict_use_case.py's identical asyncio.to_thread() usage
+            # for the full rationale — decide() synchronously trains up to
+            # 5 models per holding and must not block this coroutine's
+            # event loop, especially here where it runs once per holding
+            # in a loop (N holdings = N sequential blocking calls without
+            # this fix).
+            decision = await asyncio.to_thread(
+                self._decision_engine.decide, holding.symbol, ohlcv
+            )
             items.append(
                 PortfolioRecommendationItem(
                     symbol=holding.symbol.upper(), quantity=holding.quantity, decision=decision

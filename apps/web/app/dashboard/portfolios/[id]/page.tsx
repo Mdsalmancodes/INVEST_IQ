@@ -22,16 +22,17 @@ export default function PortfolioDetailPage() {
   const params = useParams<{ id: string }>();
   const portfolioId = params.id;
   const isAuthenticated = useAuthStore((state) => state.isAuthenticated);
+  const isBootstrapping = useAuthStore((state) => state.isBootstrapping);
   const { data: portfolio, isLoading, isError, error } = usePortfolio(portfolioId);
   const [isAddTransactionOpen, setIsAddTransactionOpen] = useState(false);
 
   useEffect(() => {
-    if (!isAuthenticated) {
+    if (!isBootstrapping && !isAuthenticated) {
       router.replace(`/login?redirectTo=%2Fdashboard%2Fportfolios%2F${portfolioId}`);
     }
-  }, [isAuthenticated, router, portfolioId]);
+  }, [isAuthenticated, isBootstrapping, router, portfolioId]);
 
-  if (!isAuthenticated) {
+  if (isBootstrapping || !isAuthenticated) {
     return null;
   }
 

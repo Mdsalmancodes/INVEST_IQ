@@ -66,24 +66,20 @@ class AiServiceClient(Protocol):
     async def delete_model(self, model_version_id: str) -> AiServiceResponse: ...
 
     # --- Phase 10 (AI Portfolio Intelligence) — additive extension ---
-    # Every method below maps 1:1 to one of ai-service's new
-    # /api/v1/portfolio-intelligence/* endpoints (built Phase 10, see
-    # docs/phase-10/implementation-summary.md), following the exact same
-    # "map to an existing ai-service endpoint, add no new ai-service
-    # capability here" contract as every method above.
+    # Maps 1:1 to ai-service's 2 real /api/v1/portfolio-intelligence/*
+    # endpoints (portfolio_intelligence_router.py) — Analytics, Risk
+    # Metrics, AI Portfolio Engine predictions, MPT Optimization, and the
+    # AI Recommendation Engine are all returned together by a single
+    # `analyze` call (matching ai-service's own combined response
+    # shape), rather than each being a separate proxy method, following
+    # the exact same "map to an existing ai-service endpoint, add no new
+    # ai-service capability here" contract as every method above. Monte
+    # Carlo is its own method since it is a separately-parameterized
+    # (num_runs/horizon_days), separately-expensive call, matching
+    # ai-service's own separate `/monte-carlo` endpoint.
 
-    async def get_portfolio_analytics(self, payload: dict[str, Any]) -> AiServiceResponse: ...
-
-    async def get_portfolio_risk_metrics(self, payload: dict[str, Any]) -> AiServiceResponse: ...
-
-    async def get_ai_portfolio_predictions(
+    async def analyze_portfolio_intelligence(
         self, payload: dict[str, Any]
     ) -> AiServiceResponse: ...
 
     async def run_monte_carlo_simulation(self, payload: dict[str, Any]) -> AiServiceResponse: ...
-
-    async def get_portfolio_optimization(self, payload: dict[str, Any]) -> AiServiceResponse: ...
-
-    async def get_portfolio_recommendations_v2(
-        self, payload: dict[str, Any]
-    ) -> AiServiceResponse: ...

@@ -5,28 +5,7 @@
  * (src/presentation/routers/market_data_router.py's module docstring).
  */
 
-import { ApiError, type ApiErrorPayload } from "./auth-api";
-
-const API_BASE_URL = process.env.NEXT_PUBLIC_API_BASE_URL ?? "http://localhost:8001";
-
-async function publicRequest<TResponse>(path: string): Promise<TResponse> {
-  const response = await fetch(`${API_BASE_URL}${path}`, {
-    headers: { "Content-Type": "application/json" },
-  });
-
-  const body = await response.json();
-
-  if (!response.ok) {
-    const detail =
-      typeof body?.detail === "string"
-        ? body.detail
-        : ((body as ApiErrorPayload)?.error?.message ?? "Request failed");
-    const code = (body as ApiErrorPayload)?.error?.code ?? "REQUEST_FAILED";
-    throw new ApiError(code, detail, response.status);
-  }
-
-  return body as TResponse;
-}
+import { buildQueryString, publicRequest } from "./api-client-helpers";
 
 export interface CurrentPriceResponse {
   symbol: string;
@@ -98,15 +77,6 @@ export interface InstrumentSearchResult {
 
 export interface InstrumentSearchResponse {
   items: InstrumentSearchResult[];
-}
-
-function buildQueryString(params: Record<string, string | undefined>): string {
-  const searchParams = new URLSearchParams();
-  for (const [key, value] of Object.entries(params)) {
-    if (value !== undefined) searchParams.append(key, value);
-  }
-  const query = searchParams.toString();
-  return query ? `?${query}` : "";
 }
 
 export const marketDataApi = {

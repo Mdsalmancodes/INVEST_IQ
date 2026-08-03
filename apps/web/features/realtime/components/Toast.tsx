@@ -63,7 +63,7 @@ export function showToast(toast: Omit<ToastMessage, "id">): void {
 }
 
 const VARIANT_CLASSES: Record<ToastVariant, string> = {
-  info: "border-primary-100 bg-surface text-text-primary",
+  info: "glass text-text-primary",
   success: "border-success/40 bg-success/5 text-success",
   warning: "border-warning/40 bg-warning/5 text-text-primary",
   danger: "border-danger/40 bg-danger/5 text-danger",

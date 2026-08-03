@@ -29,6 +29,7 @@ Design, per Document 4 §10.1a/§10.4:
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
 
 import numpy as np
@@ -172,64 +173,85 @@ class DecisionEngine:
 
         # --- LSTM ---
         if LstmModel.has_sufficient_history(n_rows):
-            lstm_result = self._lstm.train(close.to_numpy())
-            predictions = self._lstm.predict_next(close.to_numpy()[-60:], steps_ahead=30)
-            price_forecast_1d = predictions[0]
-            price_forecast_7d = predictions[6] if len(predictions) > 6 else predictions[-1]
-            price_forecast_30d = predictions[-1]
-            lstm_confidence = _confidence_from_rmse(lstm_result.metrics.rmse, current_price)
-            lstm_signal = _direction_signal(current_price, predictions[0])
-            signals.append(
-                MemberSignal("lstm", lstm_signal, lstm_confidence, _BASE_WEIGHTS["lstm"])
-            )
-            contributions.append(
-                FeatureContribution(name="lstm_1d_forecast", value=lstm_signal * lstm_confidence)
-            )
+            try:
+                lstm_result = self._lstm.train(close.to_numpy())
+                predictions = self._lstm.predict_next(close.to_numpy()[-60:], steps_ahead=30)
+                price_forecast_1d = predictions[0]
+                price_forecast_7d = predictions[6] if len(predictions) > 6 else predictions[-1]
+                price_forecast_30d = predictions[-1]
+                lstm_confidence = _confidence_from_rmse(lstm_result.metrics.rmse, current_price)
+                lstm_signal = _direction_signal(current_price, predictions[0])
+                signals.append(
+                    MemberSignal("lstm", lstm_signal, lstm_confidence, _BASE_WEIGHTS["lstm"])
+                )
+                contributions.append(
+                    FeatureContribution(
+                        name="lstm_1d_forecast", value=lstm_signal * lstm_confidence
+                    )
+                )
+            except Exception:  # noqa: BLE001 — see module-level rationale below
+                excluded.append("lstm")
         else:
             excluded.append("lstm")
 
         # --- ARIMA ---
         if ArimaModel.has_sufficient_history(n_rows):
-            arima_result = self._arima.train(close.to_numpy())
-            arima_predictions = self._arima.predict_next(steps_ahead=30)
-            arima_confidence = _confidence_from_rmse(arima_result.metrics.rmse, current_price)
-            arima_signal = _direction_signal(current_price, arima_predictions[0])
-            signals.append(
-                MemberSignal("arima", arima_signal, arima_confidence, _BASE_WEIGHTS["arima"])
-            )
-            contributions.append(
-                FeatureContribution(
-                    name="arima_1d_forecast", value=arima_signal * arima_confidence
+            try:
+                arima_result = self._arima.train(close.to_numpy())
+                arima_predictions = self._arima.predict_next(steps_ahead=30)
+                arima_confidence = _confidence_from_rmse(
+                    arima_result.metrics.rmse, current_price
                 )
-            )
-            if "lstm" in excluded:
-                price_forecast_1d = arima_predictions[0]
-                price_forecast_7d = (
-                    arima_predictions[6] if len(arima_predictions) > 6 else arima_predictions[-1]
+                arima_signal = _direction_signal(current_price, arima_predictions[0])
+                signals.append(
+                    MemberSignal(
+                        "arima", arima_signal, arima_confidence, _BASE_WEIGHTS["arima"]
+                    )
                 )
-                price_forecast_30d = arima_predictions[-1]
+                contributions.append(
+                    FeatureContribution(
+                        name="arima_1d_forecast", value=arima_signal * arima_confidence
+                    )
+                )
+                if "lstm" in excluded:
+                    price_forecast_1d = arima_predictions[0]
+                    price_forecast_7d = (
+                        arima_predictions[6]
+                        if len(arima_predictions) > 6
+                        else arima_predictions[-1]
+                    )
+                    price_forecast_30d = arima_predictions[-1]
+            except Exception:  # noqa: BLE001 — see module-level rationale below
+                excluded.append("arima")
         else:
             excluded.append("arima")
 
         # --- Prophet ---
         if ProphetModel.has_sufficient_history(n_rows) and prophet_is_available():
-            prophet_dates = (
-                dates if dates is not None else pd.date_range("2020-01-01", periods=n_rows)
-            )
-            prophet_result = self._prophet.train(np.asarray(prophet_dates), close.to_numpy())
-            prophet_predictions = self._prophet.predict_next(steps_ahead=30)
-            prophet_confidence = _confidence_from_rmse(prophet_result.metrics.rmse, current_price)
-            prophet_signal = _direction_signal(current_price, prophet_predictions[0])
-            signals.append(
-                MemberSignal(
-                    "prophet", prophet_signal, prophet_confidence, _BASE_WEIGHTS["prophet"]
+            try:
+                prophet_dates = (
+                    dates if dates is not None else pd.date_range("2020-01-01", periods=n_rows)
                 )
-            )
-            contributions.append(
-                FeatureContribution(
-                    name="prophet_1d_forecast", value=prophet_signal * prophet_confidence
+                prophet_result = self._prophet.train(
+                    np.asarray(prophet_dates), close.to_numpy()
                 )
-            )
+                prophet_predictions = self._prophet.predict_next(steps_ahead=30)
+                prophet_confidence = _confidence_from_rmse(
+                    prophet_result.metrics.rmse, current_price
+                )
+                prophet_signal = _direction_signal(current_price, prophet_predictions[0])
+                signals.append(
+                    MemberSignal(
+                        "prophet", prophet_signal, prophet_confidence, _BASE_WEIGHTS["prophet"]
+                    )
+                )
+                contributions.append(
+                    FeatureContribution(
+                        name="prophet_1d_forecast", value=prophet_signal * prophet_confidence
+                    )
+                )
+            except Exception:  # noqa: BLE001 — see module-level rationale below
+                excluded.append("prophet")
         else:
             excluded.append("prophet")
 
@@ -247,31 +269,39 @@ class DecisionEngine:
         if RandomForestModel.has_sufficient_history(len(combined)) and _has_both_classes(
             tree_labels
         ):
-            rf_result = self._random_forest.train(tree_features, tree_labels)
-            last_row = clean_features.iloc[[-1]]
-            rf_probability = float(self._random_forest.predict_movement(last_row)[0])
-            rf_confidence = max(rf_probability, 1.0 - rf_probability)
-            rf_signal = (rf_probability - 0.5) * 2.0
-            signals.append(
-                MemberSignal(
-                    "random_forest", rf_signal, rf_confidence, _BASE_WEIGHTS["random_forest"]
+            try:
+                rf_result = self._random_forest.train(tree_features, tree_labels)
+                last_row = clean_features.iloc[[-1]]
+                rf_probability = float(self._random_forest.predict_movement(last_row)[0])
+                rf_confidence = max(rf_probability, 1.0 - rf_probability)
+                rf_signal = (rf_probability - 0.5) * 2.0
+                signals.append(
+                    MemberSignal(
+                        "random_forest", rf_signal, rf_confidence, _BASE_WEIGHTS["random_forest"]
+                    )
                 )
-            )
-            contributions.extend(_shap_contributions(self._random_forest, last_row, rf_result))
+                contributions.extend(
+                    _shap_contributions(self._random_forest, last_row, rf_result)
+                )
+            except Exception:  # noqa: BLE001 — see module-level rationale below
+                excluded.append("random_forest")
         else:
             excluded.append("random_forest")
 
         if XgboostModel.has_sufficient_history(len(combined)) and _has_both_classes(tree_labels):
-            xgb_result = self._xgboost.train(tree_features, tree_labels)
-            last_row = clean_features.iloc[[-1]]
-            buy_prob, _sell_prob = self._xgboost.predict_buy_sell_probabilities(last_row)
-            xgb_probability = float(buy_prob[0])
-            xgb_confidence = max(xgb_probability, 1.0 - xgb_probability)
-            xgb_signal = (xgb_probability - 0.5) * 2.0
-            signals.append(
-                MemberSignal("xgboost", xgb_signal, xgb_confidence, _BASE_WEIGHTS["xgboost"])
-            )
-            contributions.extend(_shap_contributions(self._xgboost, last_row, xgb_result))
+            try:
+                xgb_result = self._xgboost.train(tree_features, tree_labels)
+                last_row = clean_features.iloc[[-1]]
+                buy_prob, _sell_prob = self._xgboost.predict_buy_sell_probabilities(last_row)
+                xgb_probability = float(buy_prob[0])
+                xgb_confidence = max(xgb_probability, 1.0 - xgb_probability)
+                xgb_signal = (xgb_probability - 0.5) * 2.0
+                signals.append(
+                    MemberSignal("xgboost", xgb_signal, xgb_confidence, _BASE_WEIGHTS["xgboost"])
+                )
+                contributions.extend(_shap_contributions(self._xgboost, last_row, xgb_result))
+            except Exception:  # noqa: BLE001 — see module-level rationale below
+                excluded.append("xgboost")
         else:
             excluded.append("xgboost")
 
@@ -304,6 +334,21 @@ class DecisionEngine:
                 f"No model family could contribute a signal for {symbol!r} — "
                 f"insufficient history across all 6 required models"
             )
+
+        # Guard against a non-finite forecast reaching the API response —
+        # a numerically unstable fit (e.g. ARIMA/Prophet diverging on a
+        # pathological price series) can legitimately produce inf/-inf/NaN
+        # predictions. Rather than let that propagate into the persisted
+        # PredictionRun/API response (which would fail JSON serialization
+        # or silently corrupt downstream consumers), fall back to the
+        # current price — a safe, clearly-non-predictive placeholder — for
+        # any forecast horizon that isn't finite.
+        if not math.isfinite(price_forecast_1d):
+            price_forecast_1d = current_price
+        if not math.isfinite(price_forecast_7d):
+            price_forecast_7d = current_price
+        if not math.isfinite(price_forecast_30d):
+            price_forecast_30d = current_price
 
         overall_confidence, weighted_signal = _combine_signals(signals)
         verdict = _signal_to_verdict(weighted_signal)

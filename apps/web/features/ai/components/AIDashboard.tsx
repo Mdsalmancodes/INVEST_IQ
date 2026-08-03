@@ -1,8 +1,10 @@
 "use client";
 
 import { Card } from "@investiq/ui";
-import { useState } from "react";
+import gsap from "gsap";
+import { useLayoutEffect, useRef, useState } from "react";
 
+import { MagneticButton } from "../../dashboard-shell/components/MagneticButton";
 import { useForecast, useRecommendation } from "../hooks/useAi";
 import { ForecastChart } from "./ForecastChart";
 import { ModelStatus } from "./ModelStatus";
@@ -24,10 +26,21 @@ export interface AIDashboardProps {
  * breakdown, the LSTM/ARIMA/Prophet forecast comparison chart,
  * sentiment analysis, prediction history, and overall model status —
  * covering every founder-required Phase 7 frontend view in one page.
+ *
+ * Production-polish pass: GSAP powers a staggered reveal of the results
+ * section (Recommendation → signals → forecast → sentiment → history)
+ * whenever a new symbol is analyzed — this is the one place in the
+ * dashboard dense/sequential enough to benefit from GSAP's timeline
+ * API over a plain `motion` stagger (every child here is conditionally
+ * rendered based on independent async query state, not a static list,
+ * so a single gsap.fromTo() on the container's direct children after
+ * they mount reveals whichever combination is ready, in order, without
+ * needing to coordinate each child's own animation state).
  */
 export function AIDashboard({ initialSymbol = "" }: AIDashboardProps) {
   const [symbolInput, setSymbolInput] = useState(initialSymbol);
   const [activeSymbol, setActiveSymbol] = useState(initialSymbol);
+  const resultsRef = useRef<HTMLDivElement>(null);
 
   const { data: forecastData, isLoading: isForecastLoading } = useForecast(
     activeSymbol || undefined
@@ -37,6 +50,25 @@ export function AIDashboard({ initialSymbol = "" }: AIDashboardProps) {
   // Query deduplicates identical query keys, so this does not trigger a
   // second network request.
   const { data: recommendationData } = useRecommendation(activeSymbol || undefined);
+
+  useLayoutEffect(() => {
+    if (!activeSymbol || !resultsRef.current) return;
+    const children = Array.from(resultsRef.current.children);
+    gsap.fromTo(
+      children,
+      { opacity: 0, y: 16 },
+      { opacity: 1, y: 0, duration: 0.5, stagger: 0.08, ease: "power2.out" }
+    );
+    // Rapid re-submission of a new symbol before the previous tween
+    // finishes would otherwise stack overlapping tweens on the same
+    // elements (gsap.fromTo doesn't automatically cancel a still-running
+    // tween on the same targets) — killing any in-flight tween on these
+    // children before this effect's next run/unmount keeps at most one
+    // active animation on this container at a time.
+    return () => {
+      gsap.killTweensOf(children);
+    };
+  }, [activeSymbol]);
 
   const handleSubmit = (event: React.FormEvent) => {
     event.preventDefault();
@@ -63,17 +95,12 @@ export function AIDashboard({ initialSymbol = "" }: AIDashboardProps) {
             placeholder="Enter a symbol, e.g. AAPL"
             className="flex-1 rounded-md border border-primary-100 bg-surface px-3 py-2 text-sm text-text-primary"
           />
-          <button
-            type="submit"
-            className="rounded-md bg-primary px-4 py-2 text-sm font-medium text-white"
-          >
-            Analyze
-          </button>
+          <MagneticButton type="submit">Analyze</MagneticButton>
         </form>
       </Card>
 
       {activeSymbol ? (
-        <>
+        <div ref={resultsRef} className="flex flex-col gap-6">
           <RecommendationCard symbol={activeSymbol} />
 
           {recommendationData && (
@@ -94,7 +121,7 @@ export function AIDashboard({ initialSymbol = "" }: AIDashboardProps) {
           <SentimentDashboard symbol={activeSymbol} />
 
           <PredictionHistory symbol={activeSymbol} />
-        </>
+        </div>
       ) : (
         <Card className="flex h-32 items-center justify-center text-sm text-text-secondary">
           Enter a symbol above to see AI-generated recommendations and forecasts.

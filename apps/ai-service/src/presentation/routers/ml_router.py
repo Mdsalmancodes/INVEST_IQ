@@ -10,6 +10,7 @@ Every endpoint follows core-api's established pattern: build command/query
 
 from __future__ import annotations
 
+import asyncio
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -210,8 +211,14 @@ async def analyze_sentiment(
     use_case: Annotated[SentimentAnalysisUseCase, Depends(get_sentiment_analysis_use_case)],
 ) -> SentimentAnalysisResponse:
     try:
-        result: SentimentAnalysisResult = use_case.execute(
-            SentimentAnalysisCommand(symbol=body.symbol, texts=body.texts)
+        # SentimentAnalysisUseCase.execute() is synchronous — it runs
+        # FinBERT batch inference directly, which is CPU/GPU-bound work
+        # that would otherwise block this coroutine's event loop for the
+        # full batch's inference duration. asyncio.to_thread() offloads it
+        # to a worker thread instead (same rationale as the identical fix
+        # in predict_use_case.py/portfolio_recommendation_use_case.py).
+        result: SentimentAnalysisResult = await asyncio.to_thread(
+            use_case.execute, SentimentAnalysisCommand(symbol=body.symbol, texts=body.texts)
         )
     except MlDomainError as exc:
         _raise_domain_exception_as_http(exc)
@@ -367,7 +374,7 @@ async def train_model(
     try:
         result = await use_case.execute(
             TrainModelCommand(
-                family=body.family,  # type: ignore[arg-type]
+                family=body.family,
                 symbol=body.symbol,
                 lookback_days=body.lookback_days,
             )
@@ -388,7 +395,7 @@ async def retrain_model(
     try:
         result = await use_case.execute(
             TrainModelCommand(
-                family=body.family,  # type: ignore[arg-type]
+                family=body.family,
                 symbol=body.symbol,
                 lookback_days=body.lookback_days,
             )

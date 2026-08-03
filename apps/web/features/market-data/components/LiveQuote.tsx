@@ -2,6 +2,7 @@
 
 import { useQueryClient } from "@tanstack/react-query";
 import { Card } from "@investiq/ui";
+import { quoteTickSchema } from "@investiq/validation";
 import { useEffect } from "react";
 
 import { marketDataKeys } from "../hooks/useMarketData";
@@ -56,10 +57,9 @@ export function LiveQuote({ symbol }: LiveQuoteProps) {
 
   useEffect(() => {
     return subscribe(`quote:${symbol}`, (envelope) => {
-      const tick = envelope.data as
-        | { symbol: string; price: string; previous_close: string | null; is_stale_fallback: boolean }
-        | undefined;
-      if (!tick) return;
+      const parsed = quoteTickSchema.safeParse(envelope.data);
+      if (!parsed.success) return;
+      const tick = parsed.data;
 
       queryClient.setQueryData<CurrentPriceResponse>(marketDataKeys.quote(symbol), (previous) => ({
         symbol: tick.symbol,

@@ -79,3 +79,39 @@ class TestMockAiServiceClient:
         result = await client.get_metrics()
 
         assert result.body["total_trained_versions"] == 0
+
+
+    async def test_analyze_portfolio_intelligence_returns_a_well_formed_zeroed_result(
+        self,
+    ) -> None:
+        client = MockAiServiceClient()
+
+        result = await client.analyze_portfolio_intelligence(
+            {
+                "holdings": [
+                    {"symbol": "AAPL", "quantity": 10, "market_value": 1000.0, "sector": "Tech"}
+                ]
+            }
+        )
+
+        assert result.status_code == 200
+        assert result.body["optimization"] is None
+        assert result.body["recommendations"] == []
+        assert result.body["ai_predictions"]["market_exposure_pct"] == 50.0
+
+    async def test_run_monte_carlo_simulation_echoes_the_requested_run_count(self) -> None:
+        client = MockAiServiceClient()
+
+        result = await client.run_monte_carlo_simulation(
+            {
+                "holdings": [
+                    {"symbol": "AAPL", "quantity": 10, "market_value": 1000.0, "sector": "Tech"}
+                ],
+                "num_runs": 500,
+                "horizon_days": 100,
+            }
+        )
+
+        assert result.status_code == 200
+        assert result.body["num_runs"] == 500
+        assert result.body["starting_value"] == 1000.0

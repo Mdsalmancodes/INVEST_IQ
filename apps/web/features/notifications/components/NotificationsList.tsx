@@ -1,6 +1,7 @@
 "use client";
 
 import { Card } from "@investiq/ui";
+import { alertNotificationTickSchema } from "@investiq/validation";
 import { useQueryClient } from "@tanstack/react-query";
 import { useEffect } from "react";
 
@@ -42,10 +43,9 @@ export function NotificationsList() {
 
   useEffect(() => {
     return subscribe("alert", (envelope) => {
-      const notification = envelope.data as
-        | { title: string; body: string }
-        | undefined;
-      if (!notification) return;
+      const parsed = alertNotificationTickSchema.safeParse(envelope.data);
+      if (!parsed.success) return;
+      const notification = parsed.data;
 
       showToast({ title: notification.title, description: notification.body, variant: "warning" });
       queryClient.invalidateQueries({ queryKey: notificationKeys.all });

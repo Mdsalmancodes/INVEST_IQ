@@ -75,7 +75,16 @@ class Settings(BaseSettings):
     # this setting MUST be identical to ai-service's own
     # INTERNAL_SERVICE_TOKEN. Only AiServiceClient (the sole caller of
     # ai-service from this codebase) ever reads or sends it.
-    internal_service_token: str = "change-me-in-every-real-environment"
+    #
+    # Required with no default (matching jwt_secret's fail-fast pattern
+    # above) — this used to default to the placeholder string
+    # "change-me-in-every-real-environment", which would have silently
+    # worked (both core-api and ai-service would agree on the same
+    # placeholder value) while providing zero actual security: anyone who
+    # read this file's source would know the token for any misconfigured
+    # deployment. Failing fast on a missing value forces every real
+    # environment to set an actual secret.
+    internal_service_token: SecretStr
     ai_service_request_timeout_seconds: float = 30.0
     """AI training endpoints can genuinely take longer than a typical API
     call (real model fitting, not a DB round-trip) — a longer default

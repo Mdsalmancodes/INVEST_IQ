@@ -14,6 +14,7 @@ from src.application.ai_proxy.ai_service_client import AiServiceClient
 from src.application.auth.audit_logger import AuditLogger
 from src.config import Settings, get_settings
 from src.infrastructure.http.ai_service_client import HttpAiServiceClient
+from src.infrastructure.http.ai_service_http_client import get_ai_service_http_client
 from src.infrastructure.http.mock_ai_service_client import MockAiServiceClient
 from src.infrastructure.persistence.postgres.repositories.audit_log_repository import (
     SqlAlchemyAuditLogRepository,
@@ -28,8 +29,9 @@ def get_ai_service_client(
         return MockAiServiceClient()
     return HttpAiServiceClient(
         base_url=settings.ai_service_base_url,
-        internal_service_token=settings.internal_service_token,
+        internal_service_token=settings.internal_service_token.get_secret_value(),
         timeout_seconds=settings.ai_service_request_timeout_seconds,
+        client=get_ai_service_http_client(),
     )
 
 

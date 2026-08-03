@@ -4,29 +4,20 @@
  * scoped to auth for Phase 2. Talks to the BFF route handlers (not
  * core-api directly from the browser) — Document 3 §7.3.
  *
- * REFRESH TOKEN HANDLING (Phase 2 interim, disclosed in the Phase 2
- * verification report's known-issues section): Document 3 §7.4's real
- * design has the BFF intercept /login and /refresh responses, strip the
- * refresh token out, and set it as an httpOnly/secure/sameSite=strict
- * cookie — invisible to JS entirely. That BFF interception layer is not
- * yet built in Phase 2 (auth_router.py currently returns both tokens
- * directly in the JSON body). As an interim that is still strictly better
- * than the anti-pattern this architecture explicitly warns against
- * (localStorage, Document 3 §7.4), this module holds the refresh token in
- * a private, non-exported module-level variable — never in Zustand/React
- * state (which would make it inspectable via React/Redux devtools) and
- * never in localStorage (persists across tabs/sessions, worse XSS blast
- * radius). This is still readable by any script executing on the page
- * (true of any in-memory JS value), so it is NOT equivalent to the
- * httpOnly-cookie protection the frozen architecture specifies — it is a
- * disclosed, narrower interim, not a substitute.
+ * REFRESH TOKEN HANDLING: Document 3 §7.4's target design — the Next.js
+ * BFF intercepts /login and /refresh responses, strips the refresh token
+ * out, and sets it as an httpOnly/secure/sameSite=strict cookie, invisible
+ * to JS entirely — is now fully implemented via app/api/bff/{login,
+ * refresh,logout}/route.ts. This module calls THOSE routes (same-origin,
+ * so the browser attaches/receives the httpOnly cookie automatically —
+ * no `refreshTokenInMemory` variable, no explicit refresh_token ever
+ * appears in this file's requests or responses) rather than calling
+ * core-api's /auth/{login,refresh,logout} directly. core-api's raw
+ * refresh_token value is now handled exclusively server-side, inside the
+ * BFF route handlers — it is never present in any browser-visible
+ * JavaScript value, closing the gap the module docstring here previously
+ * disclosed as an interim (in-memory-variable) approximation.
  */
-
-let refreshTokenInMemory: string | null = null;
-
-export function setRefreshToken(token: string | null): void {
-  refreshTokenInMemory = token;
-}
 
 export interface ApiErrorPayload {
   success: false;
@@ -83,9 +74,50 @@ async function request<TResponse>(
   return body as TResponse;
 }
 
+/**
+ * Same-origin requests to this Next.js app's own /api/bff/* Route
+ * Handlers — deliberately NOT going through `request()`/API_BASE_URL
+ * (those target core-api directly). `credentials: "include"` ensures the
+ * httpOnly refresh-token cookie is sent/received even though these calls
+ * originate from client components, matching how the browser already
+ * automatically attaches cookies to same-origin requests by default —
+ * stated explicitly here rather than relying on the implicit default.
+ */
+async function bffRequest<TResponse>(
+  path: string,
+  options: RequestInit & { accessToken?: string } = {}
+): Promise<TResponse> {
+  const { accessToken, headers, ...rest } = options;
+  const response = await fetch(path, {
+    ...rest,
+    credentials: "include",
+    headers: {
+      "Content-Type": "application/json",
+      ...(accessToken ? { Authorization: `Bearer ${accessToken}` } : {}),
+      ...headers,
+    },
+  });
+
+  if (response.status === 204) {
+    return undefined as TResponse;
+  }
+
+  const body = await response.json();
+
+  if (!response.ok) {
+    const detail =
+      typeof body?.detail === "string"
+        ? body.detail
+        : (body as ApiErrorPayload)?.error?.message ?? "Request failed";
+    const code = (body as ApiErrorPayload)?.error?.code ?? "REQUEST_FAILED";
+    throw new ApiError(code, detail, response.status);
+  }
+
+  return body as TResponse;
+}
+
 export interface LoginResponse {
   access_token: string;
-  refresh_token: string;
   token_type: string;
 }
 
@@ -106,42 +138,27 @@ export const authApi = {
       body: JSON.stringify(payload),
     }),
 
-  login: async (payload: { email: string; password: string }) => {
-    const result = await request<LoginResponse>("/api/v1/auth/login", {
+  login: (payload: { email: string; password: string }) =>
+    bffRequest<LoginResponse>("/api/bff/login", {
       method: "POST",
       body: JSON.stringify(payload),
-    });
-    setRefreshToken(result.refresh_token);
-    return result;
-  },
+    }),
 
-  refreshAccessToken: async () => {
-    if (refreshTokenInMemory === null) {
-      throw new ApiError("NO_REFRESH_TOKEN", "No active session to refresh", 401);
-    }
-    const result = await request<LoginResponse>("/api/v1/auth/refresh", {
-      method: "POST",
-      body: JSON.stringify({ refresh_token: refreshTokenInMemory }),
-    });
-    setRefreshToken(result.refresh_token); // rotation — Document 3 §7.4
-    return result;
-  },
+  refreshAccessToken: () =>
+    bffRequest<LoginResponse>("/api/bff/refresh", { method: "POST" }),
 
   logoutCurrentSession: async (accessToken: string) => {
-    if (refreshTokenInMemory === null) return;
-    // Phase 8: core-api's POST /api/v1/auth/logout now requires
+    // Phase 8: core-api's POST /api/v1/auth/logout requires
     // authentication (it needs the presented access token's jti to add
     // to the Redis blacklist — see src/application/auth/logout_use_case.py
-    // and src/presentation/routers/auth_router.py). Previously this call
-    // was anonymous; the accessToken param is a required addition here,
-    // not optional, since a logout call with no bearer token will now be
-    // rejected with 401 before ever reaching LogoutUseCase.
-    await request<undefined>("/api/v1/auth/logout", {
+    // and src/presentation/routers/auth_router.py) — the BFF route
+    // forwards this Authorization header through to core-api and reads
+    // the refresh token from the httpOnly cookie itself; this module
+    // never touches the raw refresh token value at all.
+    await bffRequest<undefined>("/api/bff/logout", {
       method: "POST",
       accessToken,
-      body: JSON.stringify({ refresh_token: refreshTokenInMemory }),
     });
-    setRefreshToken(null);
   },
 
   requestPasswordReset: (email: string) =>

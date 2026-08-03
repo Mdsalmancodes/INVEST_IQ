@@ -102,3 +102,15 @@ class HttpAiServiceClient:
 
     async def delete_model(self, model_version_id: str) -> AiServiceResponse:
         return await self._request("DELETE", f"/api/v1/ml/models/{model_version_id}")
+
+    # --- Phase 10 (AI Portfolio Intelligence) ---
+
+    async def analyze_portfolio_intelligence(self, payload: dict[str, Any]) -> AiServiceResponse:
+        return await self._request(
+            "POST", "/api/v1/portfolio-intelligence/analyze", json_body=payload
+        )
+
+    async def run_monte_carlo_simulation(self, payload: dict[str, Any]) -> AiServiceResponse:
+        return await self._request(
+            "POST", "/api/v1/portfolio-intelligence/monte-carlo", json_body=payload
+        )

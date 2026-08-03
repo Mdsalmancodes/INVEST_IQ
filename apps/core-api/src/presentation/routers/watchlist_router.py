@@ -49,6 +49,7 @@ from src.application.watchlist.update_watchlist_use_case import (
 from src.domain.market_data.exceptions import MarketDataDomainError
 from src.domain.watchlist.entities import Watchlist
 from src.domain.watchlist.exceptions import WatchlistDomainError
+from src.domain.watchlist.repositories import SortDirection, WatchlistSortField
 from src.domain.watchlist.value_objects import WatchlistId, WatchlistItemId
 from src.presentation.dependencies.auth import CurrentUser, get_current_user
 from src.presentation.dependencies.watchlist_use_cases import (
@@ -169,8 +170,8 @@ async def list_watchlists(
         EnsureDefaultWatchlistUseCase, Depends(get_ensure_default_watchlist_use_case)
     ],
     search: Annotated[str | None, Query()] = None,
-    sort_by: Annotated[str, Query()] = "created_at",
-    sort_direction: Annotated[str, Query()] = "desc",
+    sort_by: Annotated[WatchlistSortField, Query()] = "created_at",
+    sort_direction: Annotated[SortDirection, Query()] = "desc",
     page: Annotated[int, Query(ge=1)] = 1,
     page_size: Annotated[int, Query(ge=1, le=100)] = 20,
 ) -> WatchlistListResponse:
@@ -184,8 +185,8 @@ async def list_watchlists(
         ListWatchlistsQuery(
             user_id=str(current_user.user_id),
             search=search,
-            sort_by=sort_by,  # type: ignore[arg-type]
-            sort_direction=sort_direction,  # type: ignore[arg-type]
+            sort_by=sort_by,
+            sort_direction=sort_direction,
             page=page,
             page_size=page_size,
         )

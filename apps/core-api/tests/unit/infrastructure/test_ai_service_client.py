@@ -109,3 +109,32 @@ async def test_client_without_an_injected_httpx_client_still_constructs() -> Non
         timeout_seconds=5.0,
     )
     assert client is not None
+
+
+
+class TestPortfolioIntelligenceMethods:
+    async def test_analyze_portfolio_intelligence_calls_the_correct_path(self) -> None:
+        def handler(request: httpx.Request) -> httpx.Response:
+            assert request.method == "POST"
+            assert request.url.path == "/api/v1/portfolio-intelligence/analyze"
+            return httpx.Response(200, json={"analytics": {}})
+
+        client = _build_client(httpx.MockTransport(handler))
+
+        result = await client.analyze_portfolio_intelligence({"holdings": []})
+
+        assert result.status_code == 200
+        assert result.body == {"analytics": {}}
+
+    async def test_run_monte_carlo_simulation_calls_the_correct_path(self) -> None:
+        def handler(request: httpx.Request) -> httpx.Response:
+            assert request.method == "POST"
+            assert request.url.path == "/api/v1/portfolio-intelligence/monte-carlo"
+            return httpx.Response(200, json={"num_runs": 100})
+
+        client = _build_client(httpx.MockTransport(handler))
+
+        result = await client.run_monte_carlo_simulation({"holdings": [], "num_runs": 100})
+
+        assert result.status_code == 200
+        assert result.body == {"num_runs": 100}

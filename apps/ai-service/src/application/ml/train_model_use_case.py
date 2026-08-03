@@ -15,6 +15,7 @@ that family, which this use case retires before saving the new one so
 
 from __future__ import annotations
 
+import asyncio
 from dataclasses import dataclass
 from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
@@ -99,7 +100,14 @@ class TrainModelUseCase:
             / f"{version_tag}.{extension}"
         )
 
-        validation_metrics = self._train_and_save(command, close, dates, artifact_path)
+        # _train_and_save() synchronously fits the requested model family
+        # — genuinely CPU-bound work (same rationale as DecisionEngine.
+        # decide()'s identical fix in predict_use_case.py) that would
+        # otherwise block this coroutine's event loop for the full
+        # training duration.
+        validation_metrics = await asyncio.to_thread(
+            self._train_and_save, command, close, dates, artifact_path
+        )
 
         model_version = ModelVersion.create(
             family=command.family,

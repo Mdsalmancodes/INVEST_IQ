@@ -50,6 +50,11 @@ export function OhlcvChart({ bars }: OhlcvChartProps) {
   useEffect(() => {
     if (!containerRef.current) return;
 
+    // Responsive height — 320px on desktop/tablet widths, reduced on
+    // small viewports (<640px, Tailwind's `sm` breakpoint) so the chart
+    // doesn't dominate a phone-sized screen the way a fixed 320px does.
+    const getResponsiveHeight = () => (window.innerWidth < 640 ? 220 : 320);
+
     const chart = createChart(containerRef.current, {
       layout: {
         background: { type: ColorType.Solid, color: "transparent" },
@@ -60,7 +65,7 @@ export function OhlcvChart({ bars }: OhlcvChartProps) {
         horzLines: { color: "rgba(100, 116, 139, 0.1)" },
       },
       width: containerRef.current.clientWidth,
-      height: 320,
+      height: getResponsiveHeight(),
     });
     const series = chart.addSeries(CandlestickSeries, {
       upColor: "#10b981",
@@ -75,7 +80,10 @@ export function OhlcvChart({ bars }: OhlcvChartProps) {
 
     const handleResize = () => {
       if (containerRef.current) {
-        chart.applyOptions({ width: containerRef.current.clientWidth });
+        chart.applyOptions({
+          width: containerRef.current.clientWidth,
+          height: getResponsiveHeight(),
+        });
       }
     };
     window.addEventListener("resize", handleResize);

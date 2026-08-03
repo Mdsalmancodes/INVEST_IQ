@@ -80,6 +80,14 @@ class FakeAiServiceClient:
         self.calls.append(("delete_model", (model_version_id,)))
         return self.response
 
+    async def analyze_portfolio_intelligence(self, payload: dict[str, Any]) -> AiServiceResponse:
+        self.calls.append(("analyze_portfolio_intelligence", (payload,)))
+        return self.response
+
+    async def run_monte_carlo_simulation(self, payload: dict[str, Any]) -> AiServiceResponse:
+        self.calls.append(("run_monte_carlo_simulation", (payload,)))
+        return self.response
+
 
 def _set_current_user(role: Role) -> None:
     async def _fake_current_user() -> CurrentUser:

@@ -54,7 +54,6 @@ describe("useSessionManager", () => {
     const newToken = makeToken("user", newExp);
     vi.mocked(authApi.refreshAccessToken).mockResolvedValue({
       access_token: newToken,
-      refresh_token: "rotated-refresh",
       token_type: "bearer",
     });
 

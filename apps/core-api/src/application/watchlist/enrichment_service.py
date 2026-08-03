@@ -15,6 +15,7 @@ orchestration logic here, with the router only doing DTO mapping.
 
 from __future__ import annotations
 
+import asyncio
 from dataclasses import dataclass
 from decimal import Decimal
 from typing import Protocol
@@ -84,9 +85,21 @@ class WatchlistEnrichmentService:
     async def enrich(self, watchlist: Watchlist) -> EnrichedWatchlist:
         market_status = self._get_market_status_use_case.execute()
 
-        quotes_by_item_id: dict[str, ItemQuote] = {}
-        for item in watchlist.items:
-            quotes_by_item_id[str(item.id)] = await self._quote_for_item(item.instrument_id)
+        # Concurrent, not sequential — Phase 5's original per-item `await`
+        # in a loop meant N watchlist items cost N sequential round trips
+        # (provider lookup + fallback logic per GetCurrentPriceUseCase.
+        # execute()) on every GET /watchlists/{id} call. Each item's quote
+        # lookup is fully independent (per-item errors are already caught
+        # and reported individually inside _quote_for_item, never raised),
+        # so gather() is a correctness-preserving, purely additive
+        # performance fix — no change to per-item error handling/shape.
+        items = watchlist.items
+        quotes = await asyncio.gather(
+            *(self._quote_for_item(item.instrument_id) for item in items)
+        )
+        quotes_by_item_id: dict[str, ItemQuote] = {
+            str(item.id): quote for item, quote in zip(items, quotes, strict=True)
+        }
 
         return EnrichedWatchlist(
             watchlist=watchlist,

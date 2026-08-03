@@ -9,6 +9,8 @@ from __future__ import annotations
 
 from pydantic import BaseModel, Field
 
+from src.domain.ml.value_objects import ModelFamily
+
 
 class FeatureContributionResponse(BaseModel):
     name: str
@@ -49,7 +51,10 @@ class MemberSignalResponse(BaseModel):
 
 class PredictRequest(BaseModel):
     symbol: str = Field(..., min_length=1, max_length=20)
-    news_texts: list[str] | None = Field(default=None)
+    # Same DoS-bound rationale as SentimentAnalysisRequest.texts above —
+    # news_texts feeds the same synchronous FinBERT batch inference path
+    # inside DecisionEngine.decide().
+    news_texts: list[str] | None = Field(default=None, max_length=100)
     lookback_days: int = Field(default=400, ge=30, le=2000)
 
 
@@ -86,7 +91,13 @@ class ForecastResponse(BaseModel):
 
 class SentimentAnalysisRequest(BaseModel):
     symbol: str = Field(..., min_length=1, max_length=20)
-    texts: list[str] = Field(..., min_length=1)
+    # max_length bounds the batch size — unbounded lists here would let a
+    # single request drive an arbitrarily large synchronous FinBERT batch
+    # inference call (a DoS risk against this endpoint independent of the
+    # asyncio.to_thread() event-loop fix in ml_router.py, which only stops
+    # ONE such request from blocking OTHER requests — it doesn't bound how
+    # much work any single request can demand).
+    texts: list[str] = Field(..., min_length=1, max_length=100)
 
 
 class SentimentItemResponse(BaseModel):
@@ -174,7 +185,7 @@ class ModelStatusResponse(BaseModel):
 
 
 class TrainModelRequest(BaseModel):
-    family: str = Field(..., min_length=1, max_length=20)
+    family: ModelFamily
     symbol: str = Field(..., min_length=1, max_length=20)
     lookback_days: int = Field(default=400, ge=30, le=2000)
 

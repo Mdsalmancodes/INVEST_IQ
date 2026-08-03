@@ -40,7 +40,6 @@ describe("LoginForm", () => {
   it("calls authApi.login and onSuccess with the access token on valid submit", async () => {
     vi.mocked(authApi.login).mockResolvedValue({
       access_token: "fake-access-token",
-      refresh_token: "fake-refresh-token",
       token_type: "bearer",
     });
     const onSuccess = vi.fn();

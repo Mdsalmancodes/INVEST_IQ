@@ -36,3 +36,22 @@ class TrainModelRequest(BaseModel):
     family: str = Field(..., min_length=1, max_length=20)
     symbol: str = Field(..., min_length=1, max_length=20)
     lookback_days: int = Field(default=400, ge=30, le=2000)
+
+
+class PortfolioIntelligenceHoldingRequest(BaseModel):
+    symbol: str = Field(..., min_length=1, max_length=20)
+    quantity: float = Field(..., gt=0)
+    market_value: float = Field(..., gt=0)
+    sector: str | None = None
+
+
+class PortfolioIntelligenceRequest(BaseModel):
+    holdings: list[PortfolioIntelligenceHoldingRequest] = Field(..., min_length=1)
+    lookback_days: int = Field(default=400, ge=30, le=2000)
+
+
+class MonteCarloRequest(BaseModel):
+    holdings: list[PortfolioIntelligenceHoldingRequest] = Field(..., min_length=1)
+    num_runs: int = Field(..., description="Must be one of 100, 500, 1000, 5000")
+    horizon_days: int = Field(default=252, ge=1, le=2520)
+    lookback_days: int = Field(default=400, ge=30, le=2000)
