@@ -163,3 +163,4 @@ the image.
 - [ ] `ai-service` is deployed on a network that is **not** directly reachable from the public internet or the browser — `core-api`'s AI proxy is the only intended caller, enforced by the shared internal token, but network-level isolation is still the stronger guarantee
 - [ ] Rate limiting values (`RATE_LIMIT_*`) reviewed against your expected real traffic volume, not left at local-dev defaults
 - [ ] No `.env` file (with real secret values) is committed to the repository — confirmed via `.gitignore`'s existing `.env` rule, but worth a final manual check before any deploy
+
