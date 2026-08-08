@@ -97,7 +97,7 @@ const PRODUCTION_CONTENT_SECURITY_POLICY = [
 const DEVELOPMENT_CONTENT_SECURITY_POLICY = [
   "default-src 'self'",
   "script-src 'self' 'unsafe-inline' 'unsafe-eval' 'wasm-unsafe-eval'",
-  "connect-src 'self' http://localhost:8001 ws://localhost:8001 https://api.investiq.app wss://api.investiq.app",
+  "connect-src 'self' http://localhost:8000 ws://localhost:8000 http://localhost:8001 ws://localhost:8001 https://api.investiq.app wss://api.investiq.app",
   "worker-src 'self' blob:",
   "img-src 'self' data: https://*.investiq-cdn.app",
   "style-src 'self' 'unsafe-inline'",

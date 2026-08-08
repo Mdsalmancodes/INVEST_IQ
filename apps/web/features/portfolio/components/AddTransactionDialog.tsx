@@ -1,5 +1,6 @@
 "use client";
-
+import { marketDataApi } from "@/lib/market-data-api";
+import { StockSearch } from "@/features/market-data/components/StockSearch";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { Button } from "@investiq/ui";
 import {
@@ -13,6 +14,7 @@ import { useForm } from "react-hook-form";
 
 import { ApiError } from "../../../lib/auth-api";
 import { useAddTransaction } from "../hooks/useTransactions";
+
 
 export interface AddTransactionDialogProps {
   portfolioId: string;
@@ -48,6 +50,7 @@ export function AddTransactionDialog({ portfolioId, isOpen, onClose }: AddTransa
     handleSubmit,
     watch,
     reset,
+    setValue,
     formState: { errors, isSubmitting },
   } = useForm<AddTransactionFormValues>({
     resolver: zodResolver(addTransactionSchema),
@@ -139,18 +142,27 @@ export function AddTransactionDialog({ portfolioId, isOpen, onClose }: AddTransa
 
             {INSTRUMENT_REQUIRED.has(selectedType) && (
               <div className="flex flex-col gap-1">
-                <label htmlFor="instrumentId" className="text-sm font-medium text-text-primary">
-                  Instrument ID
+                <label className="text-sm font-medium text-text-primary">
+                  Select Stock
                 </label>
-                <input
-                  id="instrumentId"
-                  type="text"
-                  placeholder="UUID"
-                  className="h-11 rounded-md border border-primary-100 bg-surface px-3 text-text-primary"
-                  aria-invalid={errors.instrumentId ? "true" : "false"}
-                  {...register("instrumentId")}
-                />
-                {errors.instrumentId && (
+
+                <StockSearch
+                  onSelect={(instrument) => {
+                    try {
+                    
+                    setValue("instrumentId", instrument.id, {
+                      shouldValidate: true,
+                      shouldDirty: true,
+                    });
+
+                  } catch (err) {
+                    console.error("Failed to fetch instrument:", err);
+                  }
+                }}
+              />
+        
+
+              {errors.instrumentId && (
                   <p role="alert" className="text-sm text-danger">
                     {errors.instrumentId.message}
                   </p>

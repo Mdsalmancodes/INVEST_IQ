@@ -5,6 +5,7 @@ composed with Depends() in auth_router.py.
 """
 
 from __future__ import annotations
+from src.infrastructure.email.smtp_email_service import SMTPEmailService
 
 from typing import Annotated
 
@@ -25,6 +26,10 @@ from src.application.auth.verify_email_use_case import (
     RequestEmailVerificationUseCase,
     VerifyEmailUseCase,
 )
+from src.config import Settings, get_settings
+from src.infrastructure.email.console_email_service import ConsoleEmailService
+from src.infrastructure.email.email_service import EmailService
+from src.infrastructure.email.resend_email_service import ResendEmailService
 from src.infrastructure.persistence.postgres.repositories.audit_log_repository import (
     SqlAlchemyAuditLogRepository,
 )
@@ -103,13 +108,37 @@ def get_logout_everywhere_use_case(
         SqlAlchemyUserRepository(session), SqlAlchemyRefreshTokenRepository(session)
     )
 
+def get_email_service(
+    settings: Annotated[Settings, Depends(get_settings)],
+) -> EmailService:
 
+    if settings.email_provider == "console":
+        return ConsoleEmailService(
+            frontend_url=settings.frontend_url,
+            email_from=settings.email_from,
+            email_from_name=settings.email_from_name,
+        )
+
+    elif settings.email_provider == "resend":
+        return ResendEmailService(
+            api_key=settings.resend_api_key.get_secret_value()
+        )
+
+    elif settings.email_provider == "smtp":
+        return SMTPEmailService(settings)   # 👈 THIS LINE ADD
+
+    else:
+        raise ValueError(f"Unsupported email provider: {settings.email_provider}")
+    
 def get_request_email_verification_use_case(
     session: Annotated[AsyncSession, Depends(get_db_session)],
     redis_clients: Annotated[RedisClients, Depends(get_redis_clients)],
+    email_service: Annotated[EmailService, Depends(get_email_service)],
 ) -> RequestEmailVerificationUseCase:
     return RequestEmailVerificationUseCase(
-        SqlAlchemyUserRepository(session), email_verification_store(redis_clients.session)
+        SqlAlchemyUserRepository(session),
+        email_verification_store(redis_clients.session),
+        email_service,
     )
 
 
@@ -125,9 +154,12 @@ def get_verify_email_use_case(
 def get_request_password_reset_use_case(
     session: Annotated[AsyncSession, Depends(get_db_session)],
     redis_clients: Annotated[RedisClients, Depends(get_redis_clients)],
+    email_service: Annotated[EmailService, Depends(get_email_service)],
 ) -> RequestPasswordResetUseCase:
     return RequestPasswordResetUseCase(
-        SqlAlchemyUserRepository(session), password_reset_store(redis_clients.session)
+        SqlAlchemyUserRepository(session),
+        password_reset_store(redis_clients.session),
+        email_service,
     )
 
 

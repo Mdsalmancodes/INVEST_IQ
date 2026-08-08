@@ -5,8 +5,13 @@ import { useEffect, useState } from "react";
 
 import { useInstrumentSearch } from "../hooks/useMarketData";
 
+
 export interface StockSearchProps {
-  onSelect: (symbol: string) => void;
+  onSelect: (instrument: {
+    id: string;
+    symbol: string;
+    name: string;
+  }) => void;
 }
 
 /**
@@ -24,60 +29,72 @@ export function StockSearch({ onSelect }: StockSearchProps) {
     return () => clearTimeout(timer);
   }, [inputValue]);
 
-  const { data, isLoading, isError } = useInstrumentSearch(debouncedQuery);
+const { data, isLoading, isError } = useInstrumentSearch(debouncedQuery);
+if (data) {
+  console.log("API DATA FULL:", data);
+}
+
+const instrumentsToShow =
+  debouncedQuery.length > 0
+    ? (Array.isArray(data) ? data : data?.items ?? [])
+    : [];
 
   return (
-    <div className="relative w-full max-w-md">
-      <label htmlFor="stock-search" className="sr-only">
-        Search for a stock
-      </label>
-      <input
-        id="stock-search"
-        type="text"
-        placeholder="Search by symbol or name (e.g. AAPL)"
-        value={inputValue}
-        onChange={(e) => setInputValue(e.target.value)}
-        className="h-11 w-full rounded-md border border-primary-100 bg-surface px-3 text-text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary"
-        autoComplete="off"
-      />
+  <div className="relative w-full max-w-md">
 
-      {debouncedQuery.length > 0 && (
-        <Card className="absolute z-10 mt-1 w-full p-0">
-          {isLoading && (
-            <p role="status" className="p-3 text-sm text-text-secondary">
-              Searching…
-            </p>
-          )}
-          {isError && (
-            <p role="alert" className="p-3 text-sm text-danger">
-              Search failed. Please try again.
-            </p>
-          )}
-          {data && data.items.length === 0 && (
-            <p className="p-3 text-sm text-text-secondary">No matching instruments found.</p>
-          )}
-          {data && data.items.length > 0 && (
-            <ul className="max-h-64 overflow-y-auto">
-              {data.items.map((instrument) => (
-                <li key={instrument.id}>
-                  <button
-                    type="button"
-                    onClick={() => {
-                      onSelect(instrument.symbol);
-                      setInputValue("");
-                      setDebouncedQuery("");
-                    }}
-                    className="flex w-full items-center justify-between px-3 py-2 text-left hover:bg-primary-50"
-                  >
-                    <span className="font-medium text-text-primary">{instrument.symbol}</span>
-                    <span className="text-sm text-text-secondary">{instrument.name}</span>
-                  </button>
-                </li>
-              ))}
-            </ul>
-          )}
-        </Card>
-      )}
-    </div>
-  );
+    {/* ✅ INPUT */}
+    <input
+      id="stock-search"
+      type="text"
+      placeholder="Search by symbol or name (e.g. AAPL)"
+      value={inputValue}
+      onChange={(e) => setInputValue(e.target.value)}
+      className="h-11 w-full rounded-md border border-primary-100 bg-surface px-3 text-text-primary"
+    />
+
+    {/* ✅ 🔥 PUT YOUR CODE HERE */}
+    {debouncedQuery.length > 0 && (
+      <Card className="absolute z-10 mt-1 w-full p-0">
+        
+        {isLoading && (
+          <p className="p-3 text-sm text-text-secondary">Searching…</p>
+        )}
+
+        {isError && (
+          <p className="p-3 text-sm text-danger">Search failed.</p>
+        )}
+
+        {!isLoading && instrumentsToShow.length === 0 && (
+          <p className="p-3 text-sm text-text-secondary">
+            No matching instruments found.
+          </p>
+        )}
+
+        {instrumentsToShow.length > 0 && (
+          <ul className="max-h-64 overflow-y-auto">
+            {instrumentsToShow.map((instrument) => (
+              <li key={instrument.symbol}>
+                <button
+                  type="button"
+                  onClick={() => {
+                    console.log("SELECTED:", instrument); 
+                    onSelect(instrument);
+                    setInputValue("");
+                    setDebouncedQuery("");
+                  }}
+                  className="flex w-full items-center justify-between px-3 py-2 hover:bg-primary-50"
+                >
+                  <span>{instrument.symbol}</span>
+                  <span>{instrument.name}</span>
+                </button>
+              </li>
+            ))}
+          </ul>
+        )}
+
+      </Card>
+    )}
+
+  </div>
+);
 }

@@ -11,7 +11,7 @@ FROM python:3.12-slim AS builder
 WORKDIR /app
 RUN pip install --no-cache-dir poetry==1.8.3
 COPY apps/core-api/pyproject.toml apps/core-api/poetry.lock* ./apps/core-api/
-COPY libs/observability /libs/observability
+COPY libs/observability /app/libs/observability
 WORKDIR /app/apps/core-api
 RUN poetry export -f requirements.txt --output requirements.txt --without-hashes \
     && pip install --no-cache-dir --target=/deps -r requirements.txt
@@ -20,7 +20,7 @@ FROM python:3.12-slim AS runtime
 RUN useradd --create-home --shell /bin/bash appuser
 WORKDIR /app
 COPY --from=builder /deps /usr/local/lib/python3.12/site-packages
-COPY --from=builder /libs/observability /libs/observability
+COPY --from=builder /app/libs/observability /app/libs/observability
 COPY apps/core-api/src/ ./src/
 COPY apps/core-api/alembic/ ./alembic/
 COPY apps/core-api/alembic.ini ./

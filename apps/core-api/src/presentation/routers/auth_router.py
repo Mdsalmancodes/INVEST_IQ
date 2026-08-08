@@ -92,16 +92,37 @@ def _client_ip(request: Request) -> str | None:
 @router.post("/register", response_model=RegisterResponse, status_code=status.HTTP_201_CREATED)
 async def register(
     body: RegisterRequest,
-    use_case: Annotated[RegisterUseCaseType, Depends(get_register_use_case)],
+    register_use_case: Annotated[
+        RegisterUseCaseType,
+        Depends(get_register_use_case),
+    ],
+    verification_use_case: Annotated[
+        RequestEmailVerificationUseCaseType,
+        Depends(get_request_email_verification_use_case),
+    ],
 ) -> RegisterResponse:
     try:
-        result = await use_case.execute(
-            RegisterCommand(email=body.email, password=body.password, full_name=body.full_name)
+        result = await register_use_case.execute(
+            RegisterCommand(
+                email=body.email,
+                password=body.password,
+                full_name=body.full_name,
+            )
         )
+
+        # Automatically send verification email
+        await verification_use_case.execute(
+            RequestEmailVerificationCommand(body.email)
+        )
+
     except AuthDomainError as exc:
         raise_as_http(exc)
-        raise  # unreachable — raise_as_http always raises; satisfies type checker
-    return RegisterResponse(user_id=str(result.user_id), email=str(result.email))
+        raise
+
+    return RegisterResponse(
+        user_id=str(result.user_id),
+        email=str(result.email),
+    )
 
 
 @router.post("/login", response_model=LoginResponse)

@@ -16,6 +16,9 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import UTC, datetime
+from typing import TYPE_CHECKING
+
+from observability import get_logger
 
 from src.application.auth.audit_logger import AuditLogger
 from src.domain.auth.exceptions import InvalidTokenError, UserNotFoundError, WeakPasswordError
@@ -24,6 +27,11 @@ from src.domain.auth.value_objects import Email, PlaintextPassword, UserId
 from src.infrastructure.security.common_password_blocklist import is_common_password
 from src.infrastructure.security.password_hasher import Argon2PasswordHasher
 from src.infrastructure.security.verification_token_store import VerificationTokenStore
+
+if TYPE_CHECKING:
+    from src.infrastructure.email.email_service import EmailService
+
+logger = get_logger(__name__)
 
 
 @dataclass(frozen=True, slots=True)
@@ -39,10 +47,14 @@ class RequestPasswordResetResult:
 
 class RequestPasswordResetUseCase:
     def __init__(
-        self, user_repository: UserRepository, token_store: VerificationTokenStore
+        self,
+        user_repository: UserRepository,
+        token_store: VerificationTokenStore,
+        email_service: EmailService | None = None,
     ) -> None:
         self._user_repository = user_repository
         self._token_store = token_store
+        self._email_service = email_service
 
     async def execute(
         self, command: RequestPasswordResetCommand
@@ -58,6 +70,28 @@ class RequestPasswordResetUseCase:
             # for the same enumeration-mitigation reason.
             return None
         raw_token = await self._token_store.issue(str(user.id))
+
+        # Send password reset email — failures are logged but never prevent
+        # the token from being issued. The user can request another email.
+        if self._email_service is not None:
+            try:
+                sent = await self._email_service.send_password_reset_email(
+                    command.email, raw_token
+                )
+                if not sent:
+                    logger.warning(
+                        "email.password_reset.delivery_failed",
+                        recipient=command.email,
+                        user_id=str(user.id),
+                    )
+            except Exception:
+                logger.error(
+                    "email.password_reset.send_error",
+                    recipient=command.email,
+                    user_id=str(user.id),
+                    exc_info=True,
+                )
+
         return RequestPasswordResetResult(raw_token=raw_token, user_id=user.id)
 
 

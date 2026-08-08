@@ -13,11 +13,19 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import UTC, datetime
+from typing import TYPE_CHECKING
+
+from observability import get_logger
 
 from src.domain.auth.exceptions import InvalidTokenError, UserNotFoundError
 from src.domain.auth.repositories import UserRepository
 from src.domain.auth.value_objects import Email, UserId
 from src.infrastructure.security.verification_token_store import VerificationTokenStore
+
+if TYPE_CHECKING:
+    from src.infrastructure.email.email_service import EmailService
+
+logger = get_logger(__name__)
 
 
 @dataclass(frozen=True, slots=True)
@@ -33,10 +41,14 @@ class RequestEmailVerificationResult:
 
 class RequestEmailVerificationUseCase:
     def __init__(
-        self, user_repository: UserRepository, token_store: VerificationTokenStore
+        self,
+        user_repository: UserRepository,
+        token_store: VerificationTokenStore,
+        email_service: EmailService | None = None,
     ) -> None:
         self._user_repository = user_repository
         self._token_store = token_store
+        self._email_service = email_service
 
     async def execute(
         self, command: RequestEmailVerificationCommand
@@ -49,6 +61,28 @@ class RequestEmailVerificationUseCase:
         if user is None or user.is_email_verified:
             return None
         raw_token = await self._token_store.issue(str(user.id))
+
+        # Send verification email — failures are logged but never prevent
+        # the token from being issued. The user can request another email.
+        if self._email_service is not None:
+            try:
+                sent = await self._email_service.send_verification_email(
+                    command.email, raw_token
+                )
+                if not sent:
+                    logger.warning(
+                        "email.verification.delivery_failed",
+                        recipient=command.email,
+                        user_id=str(user.id),
+                    )
+            except Exception:
+                logger.error(
+                    "email.verification.send_error",
+                    recipient=command.email,
+                    user_id=str(user.id),
+                    exc_info=True,
+                )
+
         return RequestEmailVerificationResult(raw_token=raw_token, user_id=user.id)
 
 

@@ -42,7 +42,7 @@ class Settings(BaseSettings):
     redis_broker_url: RedisDsn
 
     # Phase 7 — Hybrid AI/ML Engine settings.
-    core_api_base_url: str = "http://localhost:8001"
+    core_api_base_url: str = "http://127.0.0.1:8000"
     """Per the founder's instruction to reuse core-api's existing Market
     Data module rather than duplicate the ohlcv_bars table — ai-service
     calls core-api's already-public GET /api/v1/instruments/{symbol}/bars

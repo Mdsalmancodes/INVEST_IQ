@@ -16,7 +16,7 @@
 import { useAuthStore } from "../store/auth-store";
 import { ApiError, type ApiErrorPayload } from "./auth-api";
 
-export const API_BASE_URL = process.env.NEXT_PUBLIC_API_BASE_URL ?? "http://localhost:8001";
+export const API_BASE_URL = process.env.NEXT_PUBLIC_API_BASE_URL ?? "http://localhost:8000";
 
 async function parseErrorAndThrow(response: Response): Promise<never> {
   const body = await response.json();

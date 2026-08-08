@@ -75,3 +75,9 @@ ml/models/artifacts/
 
 # Storybook build
 storybook-static/
+# Your missing ignores
+apps/ai-service/data/
+downloads/
+*.txt
+apps/ai-service/data/
+*.jsonl

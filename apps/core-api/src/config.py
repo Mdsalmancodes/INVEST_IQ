@@ -166,6 +166,24 @@ class Settings(BaseSettings):
     # functionally, the same underlying computation.
     realtime_sentiment_poll_interval_seconds: float = 30.0
 
+    # Email — transactional email delivery (verification, password reset).
+    # Follows the same mock-vs-live pattern as ai_service_mode: "console"
+    # (the default) logs emails via structlog instead of sending them over
+    # the network, so local dev works without an email provider API key;
+    # "resend" sends via the Resend REST API in staging/production.
+    email_provider: Literal["console", "resend", "smtp"] = "console"
+    resend_api_key: SecretStr = SecretStr("")
+    email_from: str = "noreply@investiq.ai"
+    email_from_name: str = "INVEST IQ"
+    frontend_url: str = "http://localhost:3000"
+# ✅ ADD THIS INSIDE class Settings
+
+    smtp_host: str | None = None
+    smtp_port: int | None = None
+    smtp_username: str | None = None
+    smtp_password: SecretStr | None = None
+    smtp_from_email: str | None = None
+    smtp_from_name: str | None = None
 
 @lru_cache
 def get_settings() -> Settings:
