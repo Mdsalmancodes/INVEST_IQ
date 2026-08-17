@@ -1,0 +1,15 @@
+{
+  "id": "e7b2dbb5-94dc-4d6e-a270-4f487bb7d03c",
+  "family": "lstm",
+  "version_tag": "20260810T105520",
+  "trained_at": "2026-08-10T10:55:29.199266+00:00",
+  "training_data_range_start": "2025-08-11T00:00:00",
+  "training_data_range_end": "2026-08-07T00:00:00",
+  "validation_metrics": {
+    "rmse": 11.821716980191574,
+    "mae": 9.734494661030016
+  },
+  "status": "active",
+  "artifact_location": "data/models/lstm/AAPL/20260810T105520.pt",
+  "rollout_percentage": 100
+}

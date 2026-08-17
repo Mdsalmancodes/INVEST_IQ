@@ -1,0 +1,16 @@
+{
+  "artifact_location": "/app/data/models/prophet/AAPL/20260813T172853157824Z.pkl",
+  "family": "prophet",
+  "id": "155bbe62-2747-4e37-b439-4b0e8aee8a0d",
+  "rollout_percentage": 100,
+  "status": "archived",
+  "symbol": "AAPL",
+  "trained_at": "2026-08-13T17:28:53.561099+00:00",
+  "training_data_range_end": "2026-08-12T00:00:00",
+  "training_data_range_start": "2025-07-09T00:00:00",
+  "validation_metrics": {
+    "mae": 14.19507487570177,
+    "rmse": 16.51060377146875
+  },
+  "version_tag": "20260813T172853157824Z"
+}

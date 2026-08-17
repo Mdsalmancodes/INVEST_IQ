@@ -1,0 +1,15 @@
+{
+  "id": "47dbc01b-60c3-47b8-a99d-b8137a17b45a",
+  "family": "arima",
+  "version_tag": "20260810T110533",
+  "trained_at": "2026-08-10T11:05:34.121489+00:00",
+  "training_data_range_start": "2025-08-11T00:00:00",
+  "training_data_range_end": "2026-08-07T00:00:00",
+  "validation_metrics": {
+    "rmse": 27.624524773078473,
+    "mae": 21.932842097020053
+  },
+  "status": "active",
+  "artifact_location": "data/models/arima/RELIANCE.NS/20260810T110533.pkl",
+  "rollout_percentage": 100
+}

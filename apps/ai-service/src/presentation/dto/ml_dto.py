@@ -167,7 +167,7 @@ class ModelVersionResponse(BaseModel):
     version_tag: str
     trained_at: str
     status: str
-    validation_metrics: dict[str, float]
+    
     artifact_location: str
 
 
@@ -191,5 +191,7 @@ class TrainModelRequest(BaseModel):
 
 
 class TrainModelResponse(BaseModel):
+    success: bool
+    message: str
     model_version: ModelVersionResponse
     validation_metrics: dict[str, float]

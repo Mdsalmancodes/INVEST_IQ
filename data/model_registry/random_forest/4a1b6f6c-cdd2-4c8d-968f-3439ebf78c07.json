@@ -1,0 +1,16 @@
+{
+  "id": "4a1b6f6c-cdd2-4c8d-968f-3439ebf78c07",
+  "family": "random_forest",
+  "symbol": "AAPL",
+  "version_tag": "20260815T114551818765Z",
+  "trained_at": "2026-08-15T11:45:55.480211+00:00",
+  "training_data_range_start": "2025-07-11T00:00:00",
+  "training_data_range_end": "2026-08-14T00:00:00",
+  "validation_metrics": {
+    "accuracy": 0.625,
+    "directional_accuracy": 0.625
+  },
+  "status": "active",
+  "artifact_location": "data/models/random_forest/AAPL/20260815T114551818765Z.pkl",
+  "rollout_percentage": 100
+}

@@ -282,6 +282,8 @@ def create_app() -> FastAPI:
     app.include_router(notification_router)
     app.include_router(ai_proxy_router)
     app.include_router(realtime_router)
+    from src.presentation.routers.predict_router import router as predict_router
+    app.include_router(predict_router, prefix="/api/v1")
 
     @app.exception_handler(Exception)
     async def unhandled_exception_handler(request: Request, exc: Exception) -> JSONResponse:

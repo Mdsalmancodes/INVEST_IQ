@@ -85,7 +85,7 @@ class Settings(BaseSettings):
     # deployment. Failing fast on a missing value forces every real
     # environment to set an actual secret.
     internal_service_token: SecretStr
-    ai_service_request_timeout_seconds: float = 30.0
+    ai_service_request_timeout_seconds: float = 120.0
     """AI training endpoints can genuinely take longer than a typical API
     call (real model fitting, not a DB round-trip) — a longer default
     timeout than a bare httpx default avoids spurious timeouts on

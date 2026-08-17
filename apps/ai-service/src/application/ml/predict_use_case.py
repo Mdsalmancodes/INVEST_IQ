@@ -1,129 +1,1046 @@
-"""PredictUseCase — the application-layer entry point backing both the
-"Predict" and "Buy/Sell/Hold Recommendation" API endpoints (the founder's
-instruction lists them separately, but a `Recommendation`'s `verdict`
-field IS the buy/sell/hold answer — Document 4 §10.4 does not specify two
-different computations for these, so both endpoints call this same use
-case, matching how this codebase avoids duplicating identical business
-logic under two names).
+"""
+PredictUseCase.
 
-Orchestrates: fetch OHLCV history via MarketDataRepository (never
-duplicating core-api's Market Data module, per the founder's instruction)
--> run the Hybrid Decision Engine -> persist the resulting PredictionRun
-(Document 4 §10.2 step 4's "never overwritten" immutable record) -> return
-the full DecisionEngineResult for the presentation layer to shape into a
-response.
+Application orchestration for one live INVEST IQ prediction.
+
+Responsibilities
+----------------
+1. Validate prediction input.
+2. Fetch real OHLCV market data.
+3. Build the OHLCV DataFrame.
+4. Load the active trained models for the requested symbol.
+5. Preserve the exact ModelVersion IDs used by those models.
+6. Configure the inference-only DecisionEngine.
+7. Execute the DecisionEngine.
+8. Create a PredictionRun domain entity.
+9. Persist the PredictionRun.
+10. Return the DecisionEngineResult.
+
+Architecture
+------------
+
+    API
+      ↓
+    PredictUseCase
+      ↓
+    MarketDataRepository
+      ↓
+    real OHLCV
+      ↓
+    ModelLoader
+      ↓
+    LoadedModels
+      ├── model instances
+      └── real ModelVersion IDs
+      ↓
+    DecisionEngine
+      ↓
+    Recommendation + Forecasts
+      ↓
+    PredictionRun
+      ↓
+    PredictionRunRepository
+
+
+Important
+---------
+
+Training is NOT performed here.
+
+Model loading is NOT performed inside DecisionEngine.
+
+The ModelLoader is responsible for:
+
+    Model Registry
+          ↓
+    active ModelVersion
+          ↓
+    trained artifact
+          ↓
+    loaded model instance
+
+PredictUseCase is responsible for connecting:
+
+    loaded model instance
+              +
+    real ModelVersion ID
+              ↓
+        DecisionEngine
+
+This preserves complete model lineage for every prediction.
 """
 
 from __future__ import annotations
 
-import asyncio
-from dataclasses import dataclass
 from datetime import date, timedelta
+from typing import Any
 
 import pandas as pd
 
-from src.application.ml.decision_engine import DecisionEngine, DecisionEngineResult
-from src.domain.ml.entities import Forecast, HorizonPoint, PredictionRun
-from src.domain.ml.exceptions import InsufficientDataError
-from src.domain.ml.repositories import MarketDataRepository, PredictionRunRepository
-from src.domain.ml.value_objects import Confidence, ModelVersionId
-
-DEFAULT_LOOKBACK_DAYS = 400
-"""Comfortably covers LSTM's 90-day minimum plus its own 60-day lookback
-window, with headroom for weekends/holidays in the fetched calendar range
-(Document 4 §10.1a's LSTM row) — a generous default, not a tight minimum,
-since fetching "a bit more than needed" is cheap and this use case has no
-way to know in advance which model families will actually run for a given
-symbol."""
-
-
-@dataclass(frozen=True, slots=True)
-class PredictCommand:
-    symbol: str
-    news_texts: list[str] | None = None
-    lookback_days: int = DEFAULT_LOOKBACK_DAYS
+from src.application.ml.decision_engine import DecisionEngine
+from src.domain.ml.entities import PredictionRun
+from src.domain.ml.value_objects import ModelVersionId
+from src.infrastructure.ml.model_registry.model_loader import (
+    LoadedModels,
+)
 
 
 class PredictUseCase:
+    """
+    Application service responsible for executing one live prediction.
+
+    This class deliberately contains orchestration logic only.
+
+    It does NOT:
+
+        - train models
+        - implement model algorithms
+        - calculate technical indicators
+        - perform ensemble mathematics
+        - perform sentiment inference directly
+        - create fake model versions
+
+    It delegates:
+
+        Model loading
+            → ModelLoader
+
+        Model inference
+            → DecisionEngine
+
+        Prediction persistence
+            → PredictionRunRepository
+    """
+
     def __init__(
         self,
-        market_data_repository: MarketDataRepository,
-        prediction_run_repository: PredictionRunRepository,
-        decision_engine: DecisionEngine | None = None,
+        market_data_repository: Any,
+        prediction_run_repository: Any,
+        decision_engine: DecisionEngine,
+        model_loader: Any,
     ) -> None:
-        self._market_data_repository = market_data_repository
-        self._prediction_run_repository = prediction_run_repository
-        self._decision_engine = decision_engine or DecisionEngine()
 
-    async def execute(self, command: PredictCommand) -> DecisionEngineResult:
-        end = date.today()
-        start = end - timedelta(days=command.lookback_days)
-        bars = await self._market_data_repository.get_ohlcv_bars(command.symbol, start, end)
+        self._market_data_repository = (
+            market_data_repository
+        )
 
-        if not bars:
-            raise InsufficientDataError(
-                f"No OHLCV history available for {command.symbol!r} — cannot run the "
-                f"Hybrid Decision Engine"
+        self._prediction_run_repository = (
+            prediction_run_repository
+        )
+
+        self._decision_engine = (
+            decision_engine
+        )
+
+        self._model_loader = (
+            model_loader
+        )
+
+    # ========================================================================
+    # EXECUTE
+    # ========================================================================
+
+    async def execute(
+        self,
+        symbol: str,
+        news_texts: list[str] | None = None,
+        lookback_days: int = 400,
+    ):
+        """
+        Execute one complete live prediction.
+
+        Parameters
+        ----------
+        symbol:
+            Stock ticker.
+
+            Examples:
+
+                AAPL
+                MSFT
+                GOOGL
+                RELIANCE.NS
+
+        news_texts:
+            Financial news/social-media text passed to FinBERT.
+
+        lookback_days:
+            Number of calendar days of historical market data requested.
+
+        Returns
+        -------
+        DecisionEngineResult
+            Complete prediction result generated by DecisionEngine.
+
+        Flow
+        ----
+
+            input
+              ↓
+            validate
+              ↓
+            real market data
+              ↓
+            OHLCV DataFrame
+              ↓
+            ModelLoader
+              ↓
+            LoadedModels
+              ↓
+            DecisionEngine
+              ↓
+            PredictionRun
+              ↓
+            persistence
+              ↓
+            result
+        """
+
+        # ====================================================================
+        # 1. INPUT NORMALIZATION
+        # ====================================================================
+
+        if not isinstance(
+            symbol,
+            str,
+        ):
+            raise TypeError(
+                "symbol must be a string."
+            )
+
+        symbol = (
+            symbol
+            .strip()
+            .upper()
+        )
+
+        if not symbol:
+
+            raise ValueError(
+                "symbol must not be empty."
+            )
+
+        # --------------------------------------------------------------------
+        # LOOKBACK VALIDATION
+        # --------------------------------------------------------------------
+
+        if not isinstance(
+            lookback_days,
+            int,
+        ):
+
+            raise TypeError(
+                "lookback_days must be an integer."
+            )
+
+        if lookback_days <= 0:
+
+            raise ValueError(
+                "lookback_days must be greater than zero."
+            )
+
+        # --------------------------------------------------------------------
+        # NEWS VALIDATION
+        # --------------------------------------------------------------------
+
+        if news_texts is None:
+
+            news_texts = []
+
+        if not isinstance(
+            news_texts,
+            list,
+        ):
+
+            raise TypeError(
+                "news_texts must be a list of strings."
+            )
+
+        clean_news_texts = [
+            text.strip()
+            for text in news_texts
+            if isinstance(text, str)
+            and text.strip()
+        ]
+
+        # ====================================================================
+        # 2. DATE RANGE
+        # ====================================================================
+
+        end_date = date.today()
+
+        start_date = (
+            end_date
+            - timedelta(
+                days=lookback_days
+            )
+        )
+
+        # ====================================================================
+        # 3. FETCH REAL MARKET DATA
+        # ====================================================================
+
+        market_data = (
+            await self._market_data_repository.get_ohlcv_bars(
+                symbol,
+                start_date,
+                end_date,
+            )
+        )
+
+        if not market_data:
+
+            raise ValueError(
+                f"No OHLCV market data available "
+                f"for {symbol} between "
+                f"{start_date} and {end_date}."
+            )
+
+        # ====================================================================
+        # 4. BUILD OHLCV DATAFRAME
+        # ====================================================================
+
+        rows: list[dict[str, Any]] = []
+
+        timestamps: list[Any] = []
+
+        for bar in market_data:
+
+            rows.append(
+                {
+                    "open": float(
+                        bar.open
+                    ),
+                    "high": float(
+                        bar.high
+                    ),
+                    "low": float(
+                        bar.low
+                    ),
+                    "close": float(
+                        bar.close
+                    ),
+                    "volume": float(
+                        bar.volume
+                    ),
+                }
+            )
+
+            timestamps.append(
+                bar.bar_time
             )
 
         ohlcv = pd.DataFrame(
-            {
-                "open": [b.open for b in bars],
-                "high": [b.high for b in bars],
-                "low": [b.low for b in bars],
-                "close": [b.close for b in bars],
-                "volume": [b.volume for b in bars],
-            },
-            index=pd.DatetimeIndex([b.bar_time for b in bars]),
+            rows,
+            columns=[
+                "open",
+                "high",
+                "low",
+                "close",
+                "volume",
+            ],
         )
 
-        # DecisionEngine.decide() synchronously trains up to 5 models
-        # (LSTM/ARIMA/Prophet/RandomForest/XGBoost) — genuinely CPU-bound
-        # work that would otherwise block this coroutine's event loop for
-        # the full training duration on every /predict and /recommendation
-        # call, starving every other concurrent request this ai-service
-        # instance is serving. asyncio.to_thread() runs it on the default
-        # executor's worker thread pool instead, keeping the event loop
-        # free. This is a request-latency/concurrency fix only — it does
-        # not change decide()'s inputs, outputs, or exception behavior.
-        result = await asyncio.to_thread(
-            self._decision_engine.decide, command.symbol, ohlcv, command.news_texts
+        # --------------------------------------------------------------------
+        # DATETIME INDEX
+        # --------------------------------------------------------------------
+
+        ohlcv.index = pd.to_datetime(
+            timestamps
         )
-        await self._prediction_run_repository.save(_to_prediction_run(result))
+
+        # --------------------------------------------------------------------
+        # SORT CHRONOLOGICALLY
+        # --------------------------------------------------------------------
+
+        ohlcv = (
+            ohlcv
+            .sort_index()
+        )
+
+        # --------------------------------------------------------------------
+        # REMOVE DUPLICATE TIMESTAMPS
+        # --------------------------------------------------------------------
+
+        ohlcv = ohlcv[
+            ~ohlcv.index.duplicated(
+                keep="last"
+            )
+        ]
+
+        # ====================================================================
+        # 5. DATA VALIDATION
+        # ====================================================================
+
+        if ohlcv.empty:
+
+            raise ValueError(
+                f"OHLCV dataframe for {symbol} "
+                "is empty after normalization."
+            )
+
+        required_columns = {
+            "open",
+            "high",
+            "low",
+            "close",
+            "volume",
+        }
+
+        # --------------------------------------------------------------------
+        # REQUIRED COLUMNS
+        # --------------------------------------------------------------------
+
+        if not required_columns.issubset(
+            ohlcv.columns
+        ):
+
+            missing = (
+                required_columns
+                - set(ohlcv.columns)
+            )
+
+            raise ValueError(
+                "OHLCV dataframe is missing "
+                f"required columns: {sorted(missing)}"
+            )
+
+        # --------------------------------------------------------------------
+        # NUMERIC CONVERSION
+        # --------------------------------------------------------------------
+
+        for column in required_columns:
+
+            ohlcv[column] = pd.to_numeric(
+                ohlcv[column],
+                errors="coerce",
+            )
+
+        # --------------------------------------------------------------------
+        # NaN VALIDATION
+        # --------------------------------------------------------------------
+
+        if (
+            ohlcv[
+                list(required_columns)
+            ]
+            .isna()
+            .any()
+            .any()
+        ):
+
+            raise ValueError(
+                f"OHLCV data for {symbol} "
+                "contains missing or non-numeric values."
+            )
+
+        # --------------------------------------------------------------------
+        # PRICE POSITIVITY
+        # --------------------------------------------------------------------
+
+        if (
+            ohlcv[
+                [
+                    "open",
+                    "high",
+                    "low",
+                    "close",
+                ]
+            ]
+            <= 0
+        ).any().any():
+
+            raise ValueError(
+                f"OHLCV price values for "
+                f"{symbol} must be positive."
+            )
+
+        # --------------------------------------------------------------------
+        # VOLUME VALIDATION
+        # --------------------------------------------------------------------
+
+        if (
+            ohlcv["volume"]
+            < 0
+        ).any():
+
+            raise ValueError(
+                f"OHLCV volume for {symbol} "
+                "cannot be negative."
+            )
+
+        # --------------------------------------------------------------------
+        # HIGH VALIDATION
+        #
+        # High must be >= Open and Close.
+        # --------------------------------------------------------------------
+
+        invalid_high = (
+            ohlcv["high"]
+            < ohlcv[
+                [
+                    "open",
+                    "close",
+                ]
+            ].max(axis=1)
+        )
+
+        # --------------------------------------------------------------------
+        # LOW VALIDATION
+        #
+        # Low must be <= Open and Close.
+        # --------------------------------------------------------------------
+
+        invalid_low = (
+            ohlcv["low"]
+            > ohlcv[
+                [
+                    "open",
+                    "close",
+                ]
+            ].min(axis=1)
+        )
+
+        if (
+            invalid_high.any()
+            or invalid_low.any()
+        ):
+
+            raise ValueError(
+                f"Invalid OHLC relationships "
+                f"detected for {symbol}."
+            )
+
+        # ====================================================================
+        # 6. LOAD ACTIVE TRAINED MODELS
+        # ====================================================================
+        #
+        # ModelLoader performs:
+        #
+        #     Model Registry
+        #          ↓
+        #     active ModelVersion
+        #          ↓
+        #     artifact
+        #          ↓
+        #     model instance
+        #
+        # It also returns:
+        #
+        #     model_version_ids
+        #
+        # containing the REAL registry IDs.
+        #
+        # No model is trained here.
+        # ====================================================================
+
+        loaded_models = (
+            await self._model_loader.load_all_models(
+                symbol
+            )
+        )
+
+        # --------------------------------------------------------------------
+        # LOADER RESULT VALIDATION
+        # --------------------------------------------------------------------
+
+        if loaded_models is None:
+
+            raise RuntimeError(
+                f"ModelLoader returned None "
+                f"for {symbol}."
+            )
+
+        if not isinstance(
+            loaded_models,
+            LoadedModels,
+        ):
+
+            raise RuntimeError(
+                "ModelLoader.load_all_models() "
+                "must return a LoadedModels instance."
+            )
+
+        # ====================================================================
+        # 7. EXTRACT LOADED MODELS + VERSION IDS
+        # ====================================================================
+
+        models = (
+            loaded_models.models
+        )
+
+        model_version_ids = (
+            loaded_models.model_version_ids
+        )
+
+        # --------------------------------------------------------------------
+        # BASIC VALIDATION
+        # --------------------------------------------------------------------
+
+        if not isinstance(
+            models,
+            dict,
+        ):
+
+            raise RuntimeError(
+                "LoadedModels.models must be a dictionary."
+            )
+
+        if not isinstance(
+            model_version_ids,
+            dict,
+        ):
+
+            raise RuntimeError(
+                "LoadedModels.model_version_ids "
+                "must be a dictionary."
+            )
+
+        # ====================================================================
+        # 8. LOG MODEL LINEAGE
+        # ====================================================================
+
+        print(
+            "=============================================================================="
+        )
+
+        print(
+            "🧬 MODEL LINEAGE"
+        )
+
+        print(
+            f"📌 SYMBOL: {symbol}"
+        )
+
+        print(
+            "📌 LOADED MODELS:",
+            [
+                family
+                for family, model
+                in models.items()
+                if model is not None
+            ],
+        )
+
+        print(
+            "📌 MODEL VERSION IDS:"
+        )
+
+        for (
+            family,
+            version_id,
+        ) in model_version_ids.items():
+
+            print(
+                f"   ├── {family}: "
+                f"{version_id.value}"
+            )
+
+        print(
+            "=============================================================================="
+        )
+
+        # ====================================================================
+        # 9. CONFIGURE DECISION ENGINE
+        # ====================================================================
+        #
+        # Two things are injected:
+        #
+        #     1. actual trained model instances
+        #
+        #     2. actual ModelVersion IDs
+        #
+        # This is the critical lineage fix.
+        # ====================================================================
+
+        self._configure_decision_engine(
+            models=models,
+            model_version_ids=model_version_ids,
+        )
+
+        # ====================================================================
+        # 10. EXECUTE DECISION ENGINE
+        # ====================================================================
+
+        result = (
+            self._decision_engine.decide(
+                symbol=symbol,
+                ohlcv=ohlcv,
+                news_texts=clean_news_texts,
+            )
+        )
+
+        # --------------------------------------------------------------------
+        # RESULT VALIDATION
+        # --------------------------------------------------------------------
+
+        if result is None:
+
+            raise RuntimeError(
+                "DecisionEngine returned None."
+            )
+
+        # --------------------------------------------------------------------
+        # RECOMMENDATION VALIDATION
+        # --------------------------------------------------------------------
+
+        recommendation = (
+            result.recommendation
+        )
+
+        if recommendation is None:
+
+            raise RuntimeError(
+                "DecisionEngine returned "
+                "recommendation=None."
+            )
+
+        # ====================================================================
+        # 11. VERIFY FORECAST ENTITIES
+        # ====================================================================
+        #
+        # PredictionRun requires member forecasts.
+        #
+        # These forecasts must carry the actual model version IDs injected
+        # above.
+        # ====================================================================
+
+        member_forecasts = (
+            result.member_forecasts
+        )
+
+        if not member_forecasts:
+
+            raise RuntimeError(
+                "DecisionEngine produced no "
+                "member Forecast entities. "
+                "PredictionRun cannot be persisted."
+            )
+
+        # ====================================================================
+        # 12. VERIFY FORECAST MODEL LINEAGE
+        # ====================================================================
+        #
+        # This is an explicit safety check.
+        #
+        # Every forecast generated by a trained registry model should
+        # reference the corresponding real ModelVersion ID.
+        #
+        # FinBERT does not generate a price Forecast, so it does not need
+        # to appear here.
+        # ====================================================================
+
+        for forecast in member_forecasts:
+
+            family = (
+                forecast.model_family
+            )
+
+            expected_version_id = (
+                model_version_ids.get(
+                    family
+                )
+            )
+
+            # --------------------------------------------------------------
+            # If the model is a registry-backed model, verify its lineage.
+            # --------------------------------------------------------------
+
+            if expected_version_id is not None:
+
+                actual_version_id = (
+                    forecast.model_version_id
+                )
+
+                if (
+                    actual_version_id
+                    != expected_version_id
+                ):
+
+                    raise RuntimeError(
+                        "Model lineage mismatch for "
+                        f"{family} on {symbol}. "
+                        f"Expected ModelVersion "
+                        f"{expected_version_id.value}, "
+                        f"but Forecast contains "
+                        f"{actual_version_id.value}."
+                    )
+
+        # ====================================================================
+        # 13. CREATE PREDICTION RUN
+        # ====================================================================
+
+        prediction_run = (
+            PredictionRun.create(
+                symbol=symbol,
+
+                member_forecasts=(
+                    member_forecasts
+                ),
+
+                ensemble_price=float(
+                    result.price_forecast_1d
+                ),
+
+                ensemble_confidence=(
+                    recommendation.confidence
+                ),
+
+                data_quality=(
+                    recommendation.data_quality
+                ),
+
+                explainability=(
+                    recommendation.explainability
+                ),
+            )
+        )
+
+        # ====================================================================
+        # 14. PERSIST PREDICTION RUN
+        # ====================================================================
+
+        await (
+            self._prediction_run_repository.save(
+                prediction_run
+            )
+        )
+
+        # ====================================================================
+        # 15. RETURN
+        # ====================================================================
+
         return result
 
+    # ========================================================================
+    # DECISION ENGINE CONFIGURATION
+    # ========================================================================
 
-def _to_prediction_run(result: DecisionEngineResult) -> PredictionRun:
-    """The DecisionEngine's Recommendation is not itself a PredictionRun
-    (Document 4 §10.2's immutable per-instrument record persists the
-    member Forecasts + ensemble outcome, distinct from the Recommendation
-    entity, which is the Decision Engine's buy/sell/hold synthesis).
-    Building the PredictionRun record here keeps that construction
-    concern in the application layer, where it has access to both the
-    Recommendation and the raw per-model signals needed to assemble it."""
-    member_forecasts = tuple(
-        Forecast.create(
-            symbol=result.recommendation.symbol,
-            model_family=signal.model_family,
-            model_version_id=ModelVersionId.new(),
-            points=(
-                HorizonPoint(
-                    horizon_days=1,
-                    predicted_price=result.price_forecast_1d,
-                    lower_bound=result.price_forecast_1d * 0.95,
-                    upper_bound=result.price_forecast_1d * 1.05,
-                ),
+    def _configure_decision_engine(
+        self,
+        models: dict[str, Any],
+        model_version_ids: dict[
+            str,
+            ModelVersionId,
+        ],
+    ) -> None:
+        """
+        Configure DecisionEngine with:
+
+            1. already-loaded trained model instances
+
+            2. real ModelVersion IDs from the registry
+
+        DecisionEngine remains responsible for:
+
+            - feature engineering
+            - model inference
+            - signal generation
+            - confidence calculation
+            - ensemble weighting
+            - recommendation
+            - explainability
+
+        PredictUseCase remains responsible for:
+
+            - orchestration
+            - model loading
+            - model/version wiring
+            - persistence
+        """
+
+        # ====================================================================
+        # MODEL INSTANCE MAPPING
+        # ====================================================================
+
+        model_mapping = {
+            "lstm": models.get(
+                "lstm"
             ),
-            confidence=Confidence(round(signal.confidence, 4)),
-            data_quality=result.recommendation.data_quality,
+
+            "arima": models.get(
+                "arima"
+            ),
+
+            "prophet": models.get(
+                "prophet"
+            ),
+
+            "random_forest": models.get(
+                "random_forest"
+            ),
+
+            "xgboost": models.get(
+                "xgboost"
+            ),
+
+            "finbert": models.get(
+                "finbert"
+            ),
+        }
+
+        # ====================================================================
+        # MODEL INSTANCE INJECTION
+        # ====================================================================
+        #
+        # DecisionEngine stores the model instances internally.
+        #
+        # We deliberately do NOT instantiate:
+        #
+        #     LstmModel()
+        #     ArimaModel()
+        #     ProphetModel()
+        #     RandomForestModel()
+        #     XgboostModel()
+        #
+        # here because those would be untrained model instances.
+        # ====================================================================
+
+        if hasattr(
+            self._decision_engine,
+            "_lstm",
+        ):
+
+            self._decision_engine._lstm = (
+                model_mapping["lstm"]
+            )
+
+        if hasattr(
+            self._decision_engine,
+            "_arima",
+        ):
+
+            self._decision_engine._arima = (
+                model_mapping["arima"]
+            )
+
+        if hasattr(
+            self._decision_engine,
+            "_prophet",
+        ):
+
+            self._decision_engine._prophet = (
+                model_mapping["prophet"]
+            )
+
+        if hasattr(
+            self._decision_engine,
+            "_random_forest",
+        ):
+
+            self._decision_engine._random_forest = (
+                model_mapping[
+                    "random_forest"
+                ]
+            )
+
+        if hasattr(
+            self._decision_engine,
+            "_xgboost",
+        ):
+
+            self._decision_engine._xgboost = (
+                model_mapping[
+                    "xgboost"
+                ]
+            )
+
+        if hasattr(
+            self._decision_engine,
+            "_finbert",
+        ):
+
+            self._decision_engine._finbert = (
+                model_mapping[
+                    "finbert"
+                ]
+            )
+
+        # ====================================================================
+        # REAL MODEL VERSION ID INJECTION
+        # ====================================================================
+        #
+        # DecisionEngine already contains:
+        #
+        #     self._model_version_ids
+        #
+        # and its:
+        #
+        #     _model_version_id()
+        #
+        # method first checks this dictionary.
+        #
+        # Therefore:
+        #
+        #     configured real ID
+        #             ↓
+        #     _model_version_id()
+        #             ↓
+        #     Forecast
+        #
+        # The old deterministic fallback ID will only be used if a model
+        # family has no configured registry ID.
+        # ====================================================================
+
+        if hasattr(
+            self._decision_engine,
+            "_model_version_ids",
+        ):
+
+            self._decision_engine._model_version_ids = (
+                dict(
+                    model_version_ids
+                )
+            )
+
+        else:
+
+            raise RuntimeError(
+                "DecisionEngine does not expose "
+                "_model_version_ids. "
+                "Real model lineage cannot be configured."
+            )
+
+        # ====================================================================
+        # FINAL CONFIGURATION LOG
+        # ====================================================================
+
+        print(
+            "🧩 DECISION ENGINE CONFIGURED"
         )
-        for signal in result.member_signals
-    )
-    return PredictionRun.create(
-        symbol=result.recommendation.symbol,
-        member_forecasts=member_forecasts,
-        ensemble_price=result.price_forecast_1d,
-        ensemble_confidence=result.recommendation.confidence,
-        data_quality=result.recommendation.data_quality,
-        explainability=result.recommendation.explainability,
-    )
+
+        print(
+            "📌 MODEL INSTANCES:"
+        )
+
+        for (
+            family,
+            model,
+        ) in model_mapping.items():
+
+            print(
+                f"   ├── {family}: "
+                f"{'LOADED' if model is not None else 'UNAVAILABLE'}"
+            )
+
+        print(
+            "📌 REAL MODEL VERSION IDS:"
+        )
+
+        if model_version_ids:
+
+            for (
+                family,
+                version_id,
+            ) in model_version_ids.items():
+
+                print(
+                    f"   ├── {family}: "
+                    f"{version_id.value}"
+                )
+
+        else:
+
+            print(
+                "   └── NONE"
+            )

@@ -1,0 +1,16 @@
+{
+  "artifact_location": "/app/data/models/arima/AAPL/20260813T172641192107Z.pkl",
+  "family": "arima",
+  "id": "56ef855c-23ae-47eb-937c-158900994f2a",
+  "rollout_percentage": 100,
+  "status": "archived",
+  "symbol": "AAPL",
+  "trained_at": "2026-08-13T17:26:41.571465+00:00",
+  "training_data_range_end": "2026-08-12T00:00:00",
+  "training_data_range_start": "2025-07-09T00:00:00",
+  "validation_metrics": {
+    "mae": 12.142313493697486,
+    "rmse": 15.261143455248972
+  },
+  "version_tag": "20260813T172641192107Z"
+}

@@ -1,41 +1,50 @@
-"""Hybrid Decision Engine — combines all 6 required model families (LSTM,
-ARIMA, Prophet, Random Forest, XGBoost, FinBERT) into a single
-BUY/SELL/HOLD Recommendation, per the founder's mandatory Phase 7
-instruction: "The Decision Engine must combine LSTM, ARIMA, Prophet,
-Random Forest, XGBoost, FinBERT using: Weighted Voting, Confidence
-Scoring, Model Aggregation" and must produce "BUY/SELL/HOLD, Overall
-Confidence %, Final Price Forecast, Portfolio Recommendation, Market
-Sentiment Score."
+"""
+Hybrid Decision Engine.
 
-Design, per Document 4 §10.1a/§10.4:
-- Each model family that lacks sufficient history OR is unavailable in
-  the current runtime is EXCLUDED from that specific run (not a failure)
-  — the resulting Recommendation's data_quality reflects this
-  ('full' | 'insufficientHistory' | 'partialEnsemble').
-- Price-forecasting members (LSTM/ARIMA/Prophet) each contribute a
-  directional signal (their forecast vs. current price) weighted by their
-  own confidence; movement-classifier members (Random Forest/XGBoost)
-  contribute an up/down probability directly; FinBERT contributes a
-  sentiment signal. All six are combined via a single weighted vote,
-  matching the founder's "Weighted Voting" instruction literally (not
-  Document 4 §10.4's narrower rules+scoring-only synthesis, which this
-  phase extends per the explicit Phase 7 instruction to also incorporate
-  full ML ensemble agreement).
-- Overall confidence is derived from (a) the weighted average of each
-  contributing member's own confidence and (b) how strongly the members
-  agree (low disagreement -> higher confidence), matching Document 4
-  §10.2 step 3's "ensemble member agreement/variance" confidence formula.
+Combines the six required model families:
+
+    LSTM
+    ARIMA
+    Prophet
+    Random Forest
+    XGBoost
+    FinBERT
+
+Responsibilities:
+
+    - Execute inference only.
+    - Combine model signals.
+    - Produce BUY / HOLD / SELL recommendation.
+    - Produce 1d / 7d / 30d price forecasts.
+    - Produce Forecast domain entities for price-forecasting models.
+    - Produce model-level signals.
+    - Produce explainability.
+    - Explicitly report excluded/unavailable models.
+
+IMPORTANT:
+
+Training is NOT performed inside this class.
+
+Models must be trained offline by TrainModelUseCase and loaded
+through ModelLoader before being injected into this engine.
+
+FinBERT is pretrained and performs inference directly.
 """
 
 from __future__ import annotations
 
 import math
+import uuid
 from dataclasses import dataclass
 
 import numpy as np
 import pandas as pd
 
-from src.domain.ml.entities import Recommendation
+from src.domain.ml.entities import (
+    Forecast,
+    HorizonPoint,
+    Recommendation,
+)
 from src.domain.ml.exceptions import InsufficientDataError
 from src.domain.ml.value_objects import (
     Confidence,
@@ -43,34 +52,56 @@ from src.domain.ml.value_objects import (
     ExplainabilityPayload,
     FeatureContribution,
     ModelFamily,
+    ModelVersionId,
     Verdict,
 )
-from src.infrastructure.ml.explainability.shap_explainer import ShapExplainerService
-from src.infrastructure.ml.features.engineer import (
-    FeatureEngineer,
-    classification_labels_from_returns,
+
+from src.infrastructure.ml.explainability.shap_explainer import (
+    ShapExplainerService,
 )
-from src.infrastructure.ml.models.arima_model import MINIMUM_HISTORY_DAYS as ARIMA_MIN_DAYS
-from src.infrastructure.ml.models.arima_model import ArimaModel
+from src.infrastructure.ml.features.engineer import FeatureEngineer
+
+from src.infrastructure.ml.models.arima_model import (
+    MINIMUM_HISTORY_DAYS as ARIMA_MIN_DAYS,
+    ArimaModel,
+)
 from src.infrastructure.ml.models.finbert_model import FinBertModel
-from src.infrastructure.ml.models.lstm_model import LstmModel
-from src.infrastructure.ml.models.prophet_model import ProphetModel
-from src.infrastructure.ml.models.prophet_model import is_available as prophet_is_available
+from src.infrastructure.ml.models.lstm_model import (
+    MINIMUM_HISTORY_DAYS as LSTM_MIN_DAYS,
+    LstmModel,
+)
+from src.infrastructure.ml.models.prophet_model import (
+    MINIMUM_HISTORY_DAYS as PROPHET_MIN_DAYS,
+    ProphetModel,
+)
 from src.infrastructure.ml.models.random_forest_model import (
     MINIMUM_HISTORY_DAYS as RF_MIN_DAYS,
+    RandomForestModel,
 )
-from src.infrastructure.ml.models.random_forest_model import RandomForestModel
-from src.infrastructure.ml.models.xgboost_model import MINIMUM_HISTORY_DAYS as XGB_MIN_DAYS
-from src.infrastructure.ml.models.xgboost_model import XgboostModel
+from src.infrastructure.ml.models.xgboost_model import (
+    MINIMUM_HISTORY_DAYS as XGB_MIN_DAYS,
+    XgboostModel,
+)
 
-# Per the founder's "Weighted Voting" instruction: each of the 6 required
-# model families gets an explicit, documented base weight, summing to 1.0.
-# Tree-based classifiers (Random Forest, XGBoost) are weighted highest
-# since they consume the full engineered feature set (Document 4 §10.2
-# step 2's stated advantage over sequence/statistical models); LSTM is
-# weighted above ARIMA/Prophet as the more expressive sequence model;
-# FinBERT's sentiment signal is weighted lowest since it is a single
-# contextual signal, not a price-series model.
+
+# ============================================================================
+# GLOBAL ENGINE REQUIREMENTS
+# ============================================================================
+
+# ARIMA / tree-based models require at least this much history.
+# The DecisionEngine itself must reject obviously insufficient datasets
+# instead of silently producing a fake HOLD prediction.
+MINIMUM_DECISION_HISTORY_DAYS = min(
+    ARIMA_MIN_DAYS,
+    RF_MIN_DAYS,
+    XGB_MIN_DAYS,
+)
+
+
+# ============================================================================
+# BASE WEIGHTS
+# ============================================================================
+
 _BASE_WEIGHTS: dict[ModelFamily, float] = {
     "random_forest": 0.22,
     "xgboost": 0.22,
@@ -80,17 +111,34 @@ _BASE_WEIGHTS: dict[ModelFamily, float] = {
     "finbert": 0.10,
 }
 
+
 _BUY_THRESHOLD = 0.15
 _SELL_THRESHOLD = -0.15
 
 
+# ============================================================================
+# MEMBER SIGNAL
+# ============================================================================
+
+
 @dataclass(frozen=True, slots=True)
 class MemberSignal:
-    """One model family's normalized contribution to the weighted vote —
-    `signal` is in [-1.0, 1.0] (negative = bearish, positive = bullish),
-    `weight` is that member's Document-4-§10.2-step-3-style confidence-
-    adjusted vote weight for this specific run (base weight scaled by the
-    member's own confidence, then renormalized across included members)."""
+    """
+    Normalized contribution from one model family.
+
+    signal:
+        [-1, +1]
+
+        -1 = strongly bearish
+         0 = neutral
+        +1 = strongly bullish
+
+    confidence:
+        [0, 1]
+
+    weight:
+        Normalized ensemble weight for this prediction run.
+    """
 
     model_family: ModelFamily
     signal: float
@@ -98,29 +146,60 @@ class MemberSignal:
     weight: float
 
 
+# ============================================================================
+# ENGINE RESULT
+# ============================================================================
+
+
 @dataclass(frozen=True, slots=True)
 class DecisionEngineResult:
-    """The full output of one DecisionEngine.decide() call — the
-    Recommendation entity plus the raw per-member signals, so callers
-    (the presentation layer, tests) can inspect exactly how the verdict
-    was reached without re-deriving it."""
+    """
+    Complete output of the DecisionEngine.
+
+    member_forecasts:
+
+        Actual Forecast domain entities produced by:
+
+            LSTM
+            ARIMA
+            Prophet
+
+    RF/XGBoost/FinBERT contribute through MemberSignal.
+    """
 
     recommendation: Recommendation
+
     member_signals: tuple[MemberSignal, ...]
+
+    member_forecasts: tuple[Forecast, ...]
+
     excluded_models: tuple[ModelFamily, ...]
+
     price_forecast_1d: float
+
     price_forecast_7d: float
+
     price_forecast_30d: float
 
 
+# ============================================================================
+# DECISION ENGINE
+# ============================================================================
+
+
 class DecisionEngine:
-    """Orchestrates all 6 required model families for one instrument and
-    combines their outputs into a single Recommendation. Model instances
-    are constructor-injected (mirroring core-api's use-case-depends-on-
-    repository-protocol pattern, adapted here to depend on concrete model
-    wrapper instances since this phase has no separate per-model-family
-    repository abstraction — ModelRegistryRepository persists trained
-    artifacts, it does not inject live instances into this engine)."""
+    """
+    Six-model hybrid inference engine.
+
+    IMPORTANT:
+
+    Model instances supplied to this class must already be ready for
+    inference.
+
+    Training is intentionally outside this class.
+
+    No model is fabricated when a model is unavailable.
+    """
 
     def __init__(
         self,
@@ -130,15 +209,55 @@ class DecisionEngine:
         random_forest: RandomForestModel | None = None,
         xgboost: XgboostModel | None = None,
         finbert: FinBertModel | None = None,
-        feature_engineer: FeatureEngineer | None = None,
+        model_version_ids: dict[
+            ModelFamily,
+            ModelVersionId,
+        ]
+        | None = None,
     ) -> None:
-        self._lstm = lstm or LstmModel()
-        self._arima = arima or ArimaModel()
-        self._prophet = prophet or ProphetModel()
-        self._random_forest = random_forest or RandomForestModel()
-        self._xgboost = xgboost or XgboostModel()
-        self._finbert = finbert or FinBertModel()
-        self._feature_engineer = feature_engineer or FeatureEngineer()
+
+        self._lstm = lstm
+        self._arima = arima
+        self._prophet = prophet
+        self._random_forest = random_forest
+        self._xgboost = xgboost
+        self._finbert = finbert
+
+        self._model_version_ids = (
+            model_version_ids or {}
+        )
+
+    # ========================================================================
+    # MODEL VERSION
+    # ========================================================================
+
+    def _model_version_id(
+        self,
+        model_family: ModelFamily,
+    ) -> ModelVersionId:
+
+        configured = self._model_version_ids.get(
+            model_family
+        )
+
+        if configured is not None:
+            return configured
+
+        namespace = uuid.uuid5(
+            uuid.NAMESPACE_URL,
+            "https://invest-iq.local/runtime-model-versions",
+        )
+
+        deterministic_id = uuid.uuid5(
+            namespace,
+            f"invest-iq:{model_family}:runtime-v1",
+        )
+
+        return ModelVersionId(deterministic_id)
+
+    # ========================================================================
+    # MAIN DECISION
+    # ========================================================================
 
     def decide(
         self,
@@ -146,357 +265,1706 @@ class DecisionEngine:
         ohlcv: pd.DataFrame,
         news_texts: list[str] | None = None,
     ) -> DecisionEngineResult:
-        """`ohlcv` must have columns [open, high, low, close, volume],
-        ascending by bar_time. `news_texts` is optional recent news/social
-        text for this symbol — if omitted, FinBERT is excluded from the
-        vote for this run (not a failure; matches Document 4 §10.1a's
-        'always available but confidence-weighted by volume' sentiment
-        design applied to the degenerate zero-article case)."""
-        n_rows = len(ohlcv)
-        if n_rows < min(ARIMA_MIN_DAYS, RF_MIN_DAYS, XGB_MIN_DAYS):
-            raise InsufficientDataError(
-                f"DecisionEngine requires at least "
-                f"{min(ARIMA_MIN_DAYS, RF_MIN_DAYS, XGB_MIN_DAYS)} rows of history, got {n_rows}"
+
+        # --------------------------------------------------------------------
+        # SYMBOL
+        # --------------------------------------------------------------------
+
+        if not isinstance(symbol, str):
+            raise TypeError(
+                "symbol must be a string."
             )
 
-        close = ohlcv["close"]
-        current_price = float(close.iloc[-1])
-        dates = ohlcv.index.to_numpy() if not isinstance(ohlcv.index, pd.RangeIndex) else None
+        symbol = symbol.strip().upper()
+
+        if not symbol:
+            raise ValueError(
+                "symbol cannot be empty."
+            )
+
+        # --------------------------------------------------------------------
+        # BASIC INPUT VALIDATION
+        # --------------------------------------------------------------------
+
+        if not isinstance(
+            ohlcv,
+            pd.DataFrame,
+        ):
+            raise TypeError(
+                "ohlcv must be a pandas DataFrame."
+            )
+
+        if ohlcv.empty:
+            raise ValueError(
+                "OHLCV dataframe cannot be empty."
+            )
+
+        required_columns = {
+            "open",
+            "high",
+            "low",
+            "close",
+            "volume",
+        }
+
+        missing_columns = (
+            required_columns
+            - set(ohlcv.columns)
+        )
+
+        if missing_columns:
+            raise ValueError(
+                "OHLCV dataframe missing required columns: "
+                f"{sorted(missing_columns)}"
+            )
+
+        ohlcv = ohlcv.copy()
+
+        # --------------------------------------------------------------------
+        # DATETIME INDEX
+        # --------------------------------------------------------------------
+
+        if not isinstance(
+            ohlcv.index,
+            pd.DatetimeIndex,
+        ):
+            try:
+                ohlcv.index = pd.to_datetime(
+                    ohlcv.index,
+                    errors="raise",
+                )
+            except Exception as exc:
+                raise ValueError(
+                    "OHLCV index must contain valid datetime values."
+                ) from exc
+
+        if ohlcv.index.tz is not None:
+            ohlcv.index = (
+                ohlcv.index
+                .tz_convert(None)
+            )
+
+        ohlcv = ohlcv.sort_index()
+
+        if ohlcv.index.has_duplicates:
+            raise ValueError(
+                "OHLCV dataframe contains duplicate timestamps."
+            )
+
+        # --------------------------------------------------------------------
+        # GLOBAL MINIMUM HISTORY
+        # --------------------------------------------------------------------
+
+        n_rows = len(ohlcv)
+
+        if n_rows < MINIMUM_DECISION_HISTORY_DAYS:
+            raise InsufficientDataError(
+                "DecisionEngine requires at least "
+                f"{MINIMUM_DECISION_HISTORY_DAYS} rows of OHLCV data; "
+                f"received {n_rows}."
+            )
+
+        print("=" * 78)
+        print("🚀 DECISION ENGINE START")
+        print(f"📌 SYMBOL: {symbol}")
+        print(f"📌 OHLCV ROWS: {n_rows}")
+        print(
+            f"📌 NEWS ITEMS: "
+            f"{len(news_texts or [])}"
+        )
+        print("=" * 78)
+
+        # --------------------------------------------------------------------
+        # NUMERIC CLOSE
+        # --------------------------------------------------------------------
+
+        close = pd.to_numeric(
+            ohlcv["close"],
+            errors="coerce",
+        )
+
+        if close.isna().any():
+            raise ValueError(
+                f"Close price data for {symbol} "
+                "contains missing or non-numeric values."
+            )
+
+        close_values = close.to_numpy(
+            dtype=float
+        )
+
+        if not np.isfinite(
+            close_values
+        ).all():
+            raise ValueError(
+                f"Close price data for {symbol} "
+                "contains NaN or infinite values."
+            )
+
+        if (close_values <= 0).any():
+            raise ValueError(
+                f"Close prices for {symbol} "
+                "must be strictly positive."
+            )
+
+        current_price = float(
+            close_values[-1]
+        )
+
+        if not math.isfinite(
+            current_price
+        ):
+            raise ValueError(
+                f"Current price for {symbol} is not finite."
+            )
+
+        print(
+            f"💰 CURRENT PRICE: "
+            f"{current_price:.4f}"
+        )
+
+        # ====================================================================
+        # FEATURE ENGINEERING
+        # ====================================================================
+
+        print("⚙️ FEATURE ENGINEERING START")
+
+        engineer = FeatureEngineer()
+
+        feature_matrix = engineer.build(
+            ohlcv
+        )
+
+        clean_features = (
+            FeatureEngineer.handle_missing_values(
+                feature_matrix.raw
+            )
+        )
+
+        if clean_features.empty:
+            raise ValueError(
+                "Feature engineering produced "
+                "an empty feature matrix."
+            )
+
+        last_row = clean_features.tail(1)
+
+        print(
+            "✅ FEATURE ENGINEERING COMPLETE:",
+            f"shape={clean_features.shape}",
+        )
+
+        print(
+            "📊 FEATURES:",
+            list(clean_features.columns),
+        )
+
+        # ====================================================================
+        # COLLECTIONS
+        # ====================================================================
 
         signals: list[MemberSignal] = []
+
+        forecasts: list[Forecast] = []
+
         excluded: list[ModelFamily] = []
-        contributions: list[FeatureContribution] = []
+
+        contributions: list[
+            FeatureContribution
+        ] = []
+
+        # ====================================================================
+        # DEFAULT FORECASTS
+        # ====================================================================
 
         price_forecast_1d = current_price
         price_forecast_7d = current_price
         price_forecast_30d = current_price
 
-        # --- LSTM ---
-        if LstmModel.has_sufficient_history(n_rows):
-            try:
-                lstm_result = self._lstm.train(close.to_numpy())
-                predictions = self._lstm.predict_next(close.to_numpy()[-60:], steps_ahead=30)
-                price_forecast_1d = predictions[0]
-                price_forecast_7d = predictions[6] if len(predictions) > 6 else predictions[-1]
-                price_forecast_30d = predictions[-1]
-                lstm_confidence = _confidence_from_rmse(lstm_result.metrics.rmse, current_price)
-                lstm_signal = _direction_signal(current_price, predictions[0])
-                signals.append(
-                    MemberSignal("lstm", lstm_signal, lstm_confidence, _BASE_WEIGHTS["lstm"])
-                )
-                contributions.append(
-                    FeatureContribution(
-                        name="lstm_1d_forecast", value=lstm_signal * lstm_confidence
-                    )
-                )
-            except Exception:  # noqa: BLE001 — see module-level rationale below
-                excluded.append("lstm")
-        else:
-            excluded.append("lstm")
+        # ====================================================================
+        # LSTM
+        # ====================================================================
 
-        # --- ARIMA ---
-        if ArimaModel.has_sufficient_history(n_rows):
-            try:
-                arima_result = self._arima.train(close.to_numpy())
-                arima_predictions = self._arima.predict_next(steps_ahead=30)
-                arima_confidence = _confidence_from_rmse(
-                    arima_result.metrics.rmse, current_price
-                )
-                arima_signal = _direction_signal(current_price, arima_predictions[0])
-                signals.append(
-                    MemberSignal(
-                        "arima", arima_signal, arima_confidence, _BASE_WEIGHTS["arima"]
-                    )
-                )
-                contributions.append(
-                    FeatureContribution(
-                        name="arima_1d_forecast", value=arima_signal * arima_confidence
-                    )
-                )
-                if "lstm" in excluded:
-                    price_forecast_1d = arima_predictions[0]
-                    price_forecast_7d = (
-                        arima_predictions[6]
-                        if len(arima_predictions) > 6
-                        else arima_predictions[-1]
-                    )
-                    price_forecast_30d = arima_predictions[-1]
-            except Exception:  # noqa: BLE001 — see module-level rationale below
-                excluded.append("arima")
-        else:
-            excluded.append("arima")
+        print("=" * 78)
+        print("🟢 LSTM CHECK")
 
-        # --- Prophet ---
-        if ProphetModel.has_sufficient_history(n_rows) and prophet_is_available():
-            try:
-                prophet_dates = (
-                    dates if dates is not None else pd.date_range("2020-01-01", periods=n_rows)
-                )
-                prophet_result = self._prophet.train(
-                    np.asarray(prophet_dates), close.to_numpy()
-                )
-                prophet_predictions = self._prophet.predict_next(steps_ahead=30)
-                prophet_confidence = _confidence_from_rmse(
-                    prophet_result.metrics.rmse, current_price
-                )
-                prophet_signal = _direction_signal(current_price, prophet_predictions[0])
-                signals.append(
-                    MemberSignal(
-                        "prophet", prophet_signal, prophet_confidence, _BASE_WEIGHTS["prophet"]
-                    )
-                )
-                contributions.append(
-                    FeatureContribution(
-                        name="prophet_1d_forecast", value=prophet_signal * prophet_confidence
-                    )
-                )
-            except Exception:  # noqa: BLE001 — see module-level rationale below
-                excluded.append("prophet")
-        else:
-            excluded.append("prophet")
+        if self._lstm is None:
 
-        # --- Random Forest & XGBoost (tree-based, full feature set) ---
-        feature_matrix = self._feature_engineer.build(ohlcv)
-        clean_features = FeatureEngineer.handle_missing_values(feature_matrix.raw)
-        labels = classification_labels_from_returns(close, horizon_days=1)
-        combined = clean_features.copy()
-        combined["_label"] = labels
-        combined = combined.dropna()
-
-        tree_features = combined.drop(columns=["_label"]) if len(combined) > 0 else combined
-        tree_labels = combined["_label"] if len(combined) > 0 else pd.Series(dtype=float)
-
-        if RandomForestModel.has_sufficient_history(len(combined)) and _has_both_classes(
-            tree_labels
-        ):
-            try:
-                rf_result = self._random_forest.train(tree_features, tree_labels)
-                last_row = clean_features.iloc[[-1]]
-                rf_probability = float(self._random_forest.predict_movement(last_row)[0])
-                rf_confidence = max(rf_probability, 1.0 - rf_probability)
-                rf_signal = (rf_probability - 0.5) * 2.0
-                signals.append(
-                    MemberSignal(
-                        "random_forest", rf_signal, rf_confidence, _BASE_WEIGHTS["random_forest"]
-                    )
-                )
-                contributions.extend(
-                    _shap_contributions(self._random_forest, last_row, rf_result)
-                )
-            except Exception:  # noqa: BLE001 — see module-level rationale below
-                excluded.append("random_forest")
-        else:
-            excluded.append("random_forest")
-
-        if XgboostModel.has_sufficient_history(len(combined)) and _has_both_classes(tree_labels):
-            try:
-                xgb_result = self._xgboost.train(tree_features, tree_labels)
-                last_row = clean_features.iloc[[-1]]
-                buy_prob, _sell_prob = self._xgboost.predict_buy_sell_probabilities(last_row)
-                xgb_probability = float(buy_prob[0])
-                xgb_confidence = max(xgb_probability, 1.0 - xgb_probability)
-                xgb_signal = (xgb_probability - 0.5) * 2.0
-                signals.append(
-                    MemberSignal("xgboost", xgb_signal, xgb_confidence, _BASE_WEIGHTS["xgboost"])
-                )
-                contributions.extend(_shap_contributions(self._xgboost, last_row, xgb_result))
-            except Exception:  # noqa: BLE001 — see module-level rationale below
-                excluded.append("xgboost")
-        else:
-            excluded.append("xgboost")
-
-        # --- FinBERT (sentiment) ---
-        sentiment_score = 0.0
-        if news_texts:
-            sentiment_results = self._finbert.analyze_batch(news_texts)
-            if sentiment_results:
-                label_values = {"positive": 1.0, "neutral": 0.0, "negative": -1.0}
-                weighted = sum(
-                    label_values[r.label] * r.confidence for r in sentiment_results
-                ) / len(sentiment_results)
-                avg_confidence = sum(r.confidence for r in sentiment_results) / len(
-                    sentiment_results
-                )
-                sentiment_score = weighted
-                signals.append(
-                    MemberSignal("finbert", weighted, avg_confidence, _BASE_WEIGHTS["finbert"])
-                )
-                contributions.append(
-                    FeatureContribution(name="finbert_sentiment", value=weighted)
-                )
-            else:
-                excluded.append("finbert")
-        else:
-            excluded.append("finbert")
-
-        if not signals:
-            raise InsufficientDataError(
-                f"No model family could contribute a signal for {symbol!r} — "
-                f"insufficient history across all 6 required models"
+            print(
+                "⚠️ LSTM unavailable: "
+                "no loaded model"
             )
 
-        # Guard against a non-finite forecast reaching the API response —
-        # a numerically unstable fit (e.g. ARIMA/Prophet diverging on a
-        # pathological price series) can legitimately produce inf/-inf/NaN
-        # predictions. Rather than let that propagate into the persisted
-        # PredictionRun/API response (which would fail JSON serialization
-        # or silently corrupt downstream consumers), fall back to the
-        # current price — a safe, clearly-non-predictive placeholder — for
-        # any forecast horizon that isn't finite.
-        if not math.isfinite(price_forecast_1d):
-            price_forecast_1d = current_price
-        if not math.isfinite(price_forecast_7d):
-            price_forecast_7d = current_price
-        if not math.isfinite(price_forecast_30d):
-            price_forecast_30d = current_price
+            excluded.append("lstm")
 
-        overall_confidence, weighted_signal = _combine_signals(signals)
-        verdict = _signal_to_verdict(weighted_signal)
-        data_quality = _determine_data_quality(excluded)
+        elif not LstmModel.has_sufficient_history(
+            n_rows
+        ):
 
-        contributions.sort(key=lambda c: abs(c.value), reverse=True)
-        explainability = ExplainabilityPayload(
-            top_contributions=tuple(contributions[:8]),
-            base_value=current_price,
-            method="weighted_ensemble_vote",
-            reasoning=_build_reasoning(verdict, signals, excluded),
+            print(
+                "⚠️ LSTM excluded: "
+                f"insufficient history "
+                f"({n_rows} rows, "
+                f"requires {LSTM_MIN_DAYS})"
+            )
+
+            excluded.append("lstm")
+
+        else:
+
+            try:
+
+                print("🟢 LSTM START")
+
+                # The model is already trained.
+                # Only inference happens here.
+                input_window = min(
+                    60,
+                    n_rows,
+                )
+
+                predictions = (
+                    self._lstm.predict_next(
+                        close_values[
+                            -input_window:
+                        ],
+                        steps_ahead=30,
+                    )
+                )
+
+                predictions = [
+                    float(value)
+                    for value in predictions
+                ]
+
+                if not predictions:
+                    raise ValueError(
+                        "LSTM returned no predictions."
+                    )
+
+                if not np.isfinite(
+                    predictions
+                ).all():
+                    raise ValueError(
+                        "LSTM returned non-finite predictions."
+                    )
+
+                price_forecast_1d = (
+                    predictions[0]
+                )
+
+                price_forecast_7d = (
+                    predictions[6]
+                    if len(predictions) >= 7
+                    else predictions[-1]
+                )
+
+                price_forecast_30d = (
+                    predictions[-1]
+                )
+
+                confidence = 0.70
+
+                signal = _direction_signal(
+                    current_price,
+                    price_forecast_1d,
+                )
+
+                signals.append(
+                    MemberSignal(
+                        model_family="lstm",
+                        signal=signal,
+                        confidence=confidence,
+                        weight=_BASE_WEIGHTS[
+                            "lstm"
+                        ],
+                    )
+                )
+
+                contributions.append(
+                    FeatureContribution(
+                        name="lstm_1d_forecast",
+                        value=signal
+                        * confidence,
+                    )
+                )
+
+                forecasts.append(
+                    _build_forecast(
+                        symbol=symbol,
+                        model_family="lstm",
+                        predictions=predictions,
+                        confidence=confidence,
+                        current_price=current_price,
+                        model_version_id=(
+                            self._model_version_id(
+                                "lstm"
+                            )
+                        ),
+                    )
+                )
+
+                print(
+                    "🟢 LSTM FINISHED:",
+                    f"1d={price_forecast_1d:.4f},",
+                    f"7d={price_forecast_7d:.4f},",
+                    f"30d={price_forecast_30d:.4f}",
+                )
+
+            except Exception as exc:
+
+                print(
+                    "🔴 LSTM ERROR:",
+                    f"{type(exc).__name__}: {exc}",
+                )
+
+                excluded.append("lstm")
+
+        # ====================================================================
+        # ARIMA
+        # ====================================================================
+
+        print("=" * 78)
+        print("🟣 ARIMA CHECK")
+
+        if self._arima is None:
+
+            print(
+                "⚠️ ARIMA unavailable: "
+                "no loaded model"
+            )
+
+            excluded.append("arima")
+
+        elif not ArimaModel.has_sufficient_history(
+            n_rows
+        ):
+
+            print(
+                "⚠️ ARIMA excluded: "
+                f"insufficient history "
+                f"({n_rows} rows, "
+                f"requires {ARIMA_MIN_DAYS})"
+            )
+
+            excluded.append("arima")
+
+        else:
+
+            try:
+
+                print("🟣 ARIMA START")
+
+                predictions = (
+                    self._arima.predict_next(
+                        steps_ahead=30
+                    )
+                )
+
+                predictions = [
+                    float(value)
+                    for value in predictions
+                ]
+
+                if not predictions:
+                    raise ValueError(
+                        "ARIMA returned no predictions."
+                    )
+
+                if not np.isfinite(
+                    predictions
+                ).all():
+                    raise ValueError(
+                        "ARIMA returned non-finite predictions."
+                    )
+
+                confidence = 0.65
+
+                signal = _direction_signal(
+                    current_price,
+                    predictions[0],
+                )
+
+                signals.append(
+                    MemberSignal(
+                        model_family="arima",
+                        signal=signal,
+                        confidence=confidence,
+                        weight=_BASE_WEIGHTS[
+                            "arima"
+                        ],
+                    )
+                )
+
+                contributions.append(
+                    FeatureContribution(
+                        name="arima_1d_forecast",
+                        value=signal
+                        * confidence,
+                    )
+                )
+
+                forecasts.append(
+                    _build_forecast(
+                        symbol=symbol,
+                        model_family="arima",
+                        predictions=predictions,
+                        confidence=confidence,
+                        current_price=current_price,
+                        model_version_id=(
+                            self._model_version_id(
+                                "arima"
+                            )
+                        ),
+                    )
+                )
+
+                # ARIMA becomes the forecast source only when
+                # LSTM did not successfully provide one.
+                if not any(
+                    signal.model_family == "lstm"
+                    for signal in signals
+                ):
+
+                    price_forecast_1d = (
+                        predictions[0]
+                    )
+
+                    price_forecast_7d = (
+                        predictions[6]
+                        if len(predictions) >= 7
+                        else predictions[-1]
+                    )
+
+                    price_forecast_30d = (
+                        predictions[-1]
+                    )
+
+                print(
+                    "🟣 ARIMA FINISHED:",
+                    f"1d={predictions[0]:.4f}",
+                )
+
+            except Exception as exc:
+
+                print(
+                    "🔴 ARIMA ERROR:",
+                    f"{type(exc).__name__}: {exc}",
+                )
+
+                excluded.append("arima")
+
+        # ====================================================================
+        # PROPHET
+        # ====================================================================
+
+        print("=" * 78)
+        print("🔵 PROPHET CHECK")
+
+        if self._prophet is None:
+
+            print(
+                "⚠️ Prophet unavailable: "
+                "no loaded model"
+            )
+
+            excluded.append("prophet")
+
+        elif not ProphetModel.has_sufficient_history(
+            n_rows
+        ):
+
+            print(
+                "⚠️ Prophet excluded: "
+                f"insufficient history "
+                f"({n_rows} rows, "
+                f"requires {PROPHET_MIN_DAYS})"
+            )
+
+            excluded.append("prophet")
+
+        else:
+
+            try:
+
+                print("🔵 PROPHET START")
+
+                predictions = (
+                    self._prophet.predict_next(
+                        steps_ahead=30
+                    )
+                )
+
+                predictions = [
+                    float(value)
+                    for value in predictions
+                ]
+
+                if not predictions:
+                    raise ValueError(
+                        "Prophet returned no predictions."
+                    )
+
+                if not np.isfinite(
+                    predictions
+                ).all():
+                    raise ValueError(
+                        "Prophet returned non-finite predictions."
+                    )
+
+                confidence = 0.65
+
+                signal = _direction_signal(
+                    current_price,
+                    predictions[0],
+                )
+
+                signals.append(
+                    MemberSignal(
+                        model_family="prophet",
+                        signal=signal,
+                        confidence=confidence,
+                        weight=_BASE_WEIGHTS[
+                            "prophet"
+                        ],
+                    )
+                )
+
+                contributions.append(
+                    FeatureContribution(
+                        name="prophet_1d_forecast",
+                        value=signal
+                        * confidence,
+                    )
+                )
+
+                forecasts.append(
+                    _build_forecast(
+                        symbol=symbol,
+                        model_family="prophet",
+                        predictions=predictions,
+                        confidence=confidence,
+                        current_price=current_price,
+                        model_version_id=(
+                            self._model_version_id(
+                                "prophet"
+                            )
+                        ),
+                    )
+                )
+
+                print(
+                    "🔵 PROPHET FINISHED:",
+                    f"1d={predictions[0]:.4f},",
+                    "7d="
+                    f"{predictions[6] if len(predictions) >= 7 else predictions[-1]:.4f},",
+                    f"30d={predictions[-1]:.4f}",
+                )
+
+            except Exception as exc:
+
+                print(
+                    "🔴 PROPHET ERROR:",
+                    f"{type(exc).__name__}: {exc}",
+                )
+
+                excluded.append("prophet")
+
+        # ====================================================================
+        # RANDOM FOREST
+        # ====================================================================
+
+        print("=" * 78)
+        print("🟡 RANDOM FOREST CHECK")
+
+        if self._random_forest is None:
+
+            print(
+                "⚠️ Random Forest unavailable: "
+                "no loaded model"
+            )
+
+            excluded.append("random_forest")
+
+        elif not RandomForestModel.has_sufficient_history(
+            n_rows
+        ):
+
+            print(
+                "⚠️ Random Forest excluded: "
+                f"insufficient history "
+                f"({n_rows} rows, "
+                f"requires {RF_MIN_DAYS})"
+            )
+
+            excluded.append("random_forest")
+
+        else:
+
+            try:
+
+                print(
+                    "🟡 RANDOM FOREST START"
+                )
+
+                probability_array = (
+                    self._random_forest
+                    .predict_movement(
+                        last_row
+                    )
+                )
+
+                if len(
+                    probability_array
+                ) == 0:
+                    raise ValueError(
+                        "Random Forest returned no probability."
+                    )
+
+                probability = (
+                    _clamp_probability(
+                        float(
+                            probability_array[
+                                0
+                            ]
+                        )
+                    )
+                )
+
+                confidence = max(
+                    probability,
+                    1.0 - probability,
+                )
+
+                signal = (
+                    probability - 0.5
+                ) * 2.0
+
+                signals.append(
+                    MemberSignal(
+                        model_family="random_forest",
+                        signal=signal,
+                        confidence=confidence,
+                        weight=_BASE_WEIGHTS[
+                            "random_forest"
+                        ],
+                    )
+                )
+
+                contributions.extend(
+                    _shap_contributions(
+                        self._random_forest,
+                        last_row,
+                    )
+                )
+
+                print(
+                    "🟡 RANDOM FOREST FINISHED:",
+                    f"buy_probability={probability:.4f},",
+                    f"signal={signal:+.4f}",
+                )
+
+            except Exception as exc:
+
+                print(
+                    "🔴 RANDOM FOREST ERROR:",
+                    f"{type(exc).__name__}: {exc}",
+                )
+
+                excluded.append(
+                    "random_forest"
+                )
+
+        # ====================================================================
+        # XGBOOST
+        # ====================================================================
+
+        print("=" * 78)
+        print("🔶 XGBOOST CHECK")
+
+        if self._xgboost is None:
+
+            print(
+                "⚠️ XGBoost unavailable: "
+                "no loaded model"
+            )
+
+            excluded.append("xgboost")
+
+        elif not XgboostModel.has_sufficient_history(
+            n_rows
+        ):
+
+            print(
+                "⚠️ XGBoost excluded: "
+                f"insufficient history "
+                f"({n_rows} rows, "
+                f"requires {XGB_MIN_DAYS})"
+            )
+
+            excluded.append("xgboost")
+
+        else:
+
+            try:
+
+                print("🔶 XGBOOST START")
+
+                (
+                    buy_probability_array,
+                    sell_probability_array,
+                ) = (
+                    self._xgboost
+                    .predict_buy_sell_probabilities(
+                        last_row
+                    )
+                )
+
+                if (
+                    len(
+                        buy_probability_array
+                    )
+                    == 0
+                    or len(
+                        sell_probability_array
+                    )
+                    == 0
+                ):
+                    raise ValueError(
+                        "XGBoost returned no probabilities."
+                    )
+
+                buy_probability = (
+                    _clamp_probability(
+                        float(
+                            buy_probability_array[
+                                0
+                            ]
+                        )
+                    )
+                )
+
+                sell_probability = (
+                    _clamp_probability(
+                        float(
+                            sell_probability_array[
+                                0
+                            ]
+                        )
+                    )
+                )
+
+                confidence = max(
+                    buy_probability,
+                    sell_probability,
+                )
+
+                # Signal is based on the BUY/SELL directional
+                # probabilities rather than only buy probability.
+                signal = (
+                    buy_probability
+                    - sell_probability
+                )
+
+                signal = float(
+                    max(
+                        -1.0,
+                        min(
+                            1.0,
+                            signal,
+                        ),
+                    )
+                )
+
+                signals.append(
+                    MemberSignal(
+                        model_family="xgboost",
+                        signal=signal,
+                        confidence=confidence,
+                        weight=_BASE_WEIGHTS[
+                            "xgboost"
+                        ],
+                    )
+                )
+
+                contributions.extend(
+                    _shap_contributions(
+                        self._xgboost,
+                        last_row,
+                    )
+                )
+
+                print(
+                    "🔶 XGBOOST FINISHED:",
+                    f"buy={buy_probability:.4f},",
+                    f"sell={sell_probability:.4f},",
+                    f"signal={signal:+.4f}",
+                )
+
+            except Exception as exc:
+
+                print(
+                    "🔴 XGBOOST ERROR:",
+                    f"{type(exc).__name__}: {exc}",
+                )
+
+                excluded.append("xgboost")
+
+        # ====================================================================
+        # FINBERT
+        # ====================================================================
+
+        print("=" * 78)
+        print("🟠 FINBERT CHECK")
+
+        sentiment_score = 0.0
+
+        if self._finbert is None:
+
+            print(
+                "⚠️ FinBERT unavailable: "
+                "no loaded model"
+            )
+
+            excluded.append("finbert")
+
+        elif not news_texts:
+
+            print(
+                "⚠️ FinBERT excluded: "
+                "no news text"
+            )
+
+            excluded.append("finbert")
+
+        else:
+
+            try:
+
+                print(
+                    "🟠 FINBERT START:",
+                    f"{len(news_texts)} news items",
+                )
+
+                sentiment_results = (
+                    self._finbert.analyze_batch(
+                        news_texts
+                    )
+                )
+
+                if not sentiment_results:
+
+                    raise ValueError(
+                        "FinBERT returned no sentiment results."
+                    )
+
+                label_values = {
+                    "positive": 1.0,
+                    "neutral": 0.0,
+                    "negative": -1.0,
+                }
+
+                weighted_sentiments = []
+
+                confidence_values = []
+
+                for result in sentiment_results:
+
+                    confidence = _clamp_probability(
+                        float(
+                            result.confidence
+                        )
+                    )
+
+                    sentiment = (
+                        label_values.get(
+                            str(
+                                result.label
+                            ).lower(),
+                            0.0,
+                        )
+                    )
+
+                    weighted_sentiments.append(
+                        sentiment
+                        * confidence
+                    )
+
+                    confidence_values.append(
+                        confidence
+                    )
+
+                sentiment_score = float(
+                    np.mean(
+                        weighted_sentiments
+                    )
+                )
+
+                avg_confidence = float(
+                    np.mean(
+                        confidence_values
+                    )
+                )
+
+                sentiment_score = max(
+                    -1.0,
+                    min(
+                        1.0,
+                        sentiment_score,
+                    ),
+                )
+
+                signals.append(
+                    MemberSignal(
+                        model_family="finbert",
+                        signal=sentiment_score,
+                        confidence=avg_confidence,
+                        weight=_BASE_WEIGHTS[
+                            "finbert"
+                        ],
+                    )
+                )
+
+                contributions.append(
+                    FeatureContribution(
+                        name="finbert_sentiment",
+                        value=sentiment_score,
+                    )
+                )
+
+                print(
+                    "🟠 FINBERT FINISHED:",
+                    f"sentiment={sentiment_score:+.4f},",
+                    f"confidence={avg_confidence:.4f}",
+                )
+
+            except Exception as exc:
+
+                print(
+                    "🔴 FINBERT ERROR:",
+                    f"{type(exc).__name__}: {exc}",
+                )
+
+                excluded.append("finbert")
+
+        # ====================================================================
+        # REMOVE DUPLICATE EXCLUSIONS
+        # ====================================================================
+
+        excluded = list(
+            dict.fromkeys(
+                excluded
+            )
         )
+
+        # ====================================================================
+        # ACTIVE MODEL SET
+        # ====================================================================
+
+        active_models = {
+            signal.model_family
+            for signal in signals
+        }
+
+        # A successfully executed model must never appear
+        # in excluded_models.
+        excluded = [
+            model
+            for model in excluded
+            if model not in active_models
+        ]
+
+        # ====================================================================
+        # NO MODEL FALLBACK
+        # ====================================================================
+
+        # IMPORTANT:
+        #
+        # We DO NOT create a fake LSTM/HOLD signal here.
+        #
+        # If all models are unavailable, the engine cannot honestly
+        # claim that a model produced a prediction.
+        #
+        # The engine therefore produces a neutral recommendation
+        # with zero contributing models.
+        if not signals:
+
+            print(
+                "⚠️ NO MODELS PRODUCED SIGNALS"
+            )
+
+            weighted_signal = 0.0
+            overall_confidence = 0.0
+            verdict = "hold"
+
+        else:
+
+            # ================================================================
+            # SAFE FORECASTS
+            # ================================================================
+
+            price_forecast_1d = _safe_forecast(
+                price_forecast_1d,
+                current_price,
+            )
+
+            price_forecast_7d = _safe_forecast(
+                price_forecast_7d,
+                current_price,
+            )
+
+            price_forecast_30d = _safe_forecast(
+                price_forecast_30d,
+                current_price,
+            )
+
+            # ================================================================
+            # NORMALIZE BASE WEIGHTS
+            # ================================================================
+
+            total_weight = sum(
+                signal.weight
+                for signal in signals
+            )
+
+            if total_weight <= 0:
+                raise RuntimeError(
+                    "Active model weights must sum to a positive value."
+                )
+
+            signals = [
+                MemberSignal(
+                    model_family=signal.model_family,
+                    signal=signal.signal,
+                    confidence=signal.confidence,
+                    weight=(
+                        signal.weight
+                        / total_weight
+                    ),
+                )
+                for signal in signals
+            ]
+
+            # ================================================================
+            # COMBINE
+            # ================================================================
+
+            (
+                overall_confidence,
+                weighted_signal,
+            ) = _combine_signals(
+                signals
+            )
+
+            verdict = _signal_to_verdict(
+                weighted_signal
+            )
+
+        # ====================================================================
+        # DATA QUALITY
+        # ====================================================================
+
+        data_quality = _determine_data_quality(
+            n_rows=n_rows,
+            excluded=excluded,
+            active_models=active_models,
+        )
+
+        # ====================================================================
+        # EXPLAINABILITY
+        # ====================================================================
+
+        contributions.sort(
+            key=lambda contribution: abs(
+                contribution.value
+            ),
+            reverse=True,
+        )
+
+        explainability = ExplainabilityPayload(
+            top_contributions=tuple(
+                contributions[:8]
+            ),
+            base_value=current_price,
+            method=(
+                "confidence_adjusted_weighted_ensemble"
+            ),
+            reasoning=_build_reasoning(
+                verdict,
+                signals,
+                excluded,
+            ),
+        )
+
+        # ====================================================================
+        # RECOMMENDATION
+        # ====================================================================
 
         recommendation = Recommendation.create(
             symbol=symbol,
             verdict=verdict,
-            confidence=Confidence(round(overall_confidence, 4)),
+            confidence=Confidence(
+                round(
+                    overall_confidence,
+                    4,
+                )
+            ),
             price_forecast=price_forecast_1d,
-            sentiment_score=round(sentiment_score, 4),
+            sentiment_score=round(
+                sentiment_score,
+                4,
+            ),
             explainability=explainability,
             data_quality=data_quality,
-            contributing_models=tuple(s.model_family for s in signals),
+            contributing_models=tuple(
+                signal.model_family
+                for signal in signals
+            ),
         )
+
+        # ====================================================================
+        # FINAL LOGGING
+        # ====================================================================
+
+        print("=" * 78)
+        print("🏁 DECISION ENGINE COMPLETE")
+
+        print(
+            f"📌 VERDICT: "
+            f"{verdict.upper()}"
+        )
+
+        print(
+            f"📌 CONFIDENCE: "
+            f"{overall_confidence:.4f}"
+        )
+
+        print(
+            f"📌 WEIGHTED SIGNAL: "
+            f"{weighted_signal:+.4f}"
+        )
+
+        print(
+            f"📌 1D FORECAST: "
+            f"{price_forecast_1d:.4f}"
+        )
+
+        print(
+            f"📌 7D FORECAST: "
+            f"{price_forecast_7d:.4f}"
+        )
+
+        print(
+            f"📌 30D FORECAST: "
+            f"{price_forecast_30d:.4f}"
+        )
+
+        print(
+            "📌 ACTIVE MODELS:",
+            [
+                signal.model_family
+                for signal in signals
+            ],
+        )
+
+        print(
+            "📌 EXCLUDED MODELS:",
+            excluded,
+        )
+
+        print(
+            f"📌 DATA QUALITY: "
+            f"{data_quality}"
+        )
+
+        print("=" * 78)
 
         return DecisionEngineResult(
             recommendation=recommendation,
-            member_signals=tuple(signals),
-            excluded_models=tuple(excluded),
+            member_signals=tuple(
+                signals
+            ),
+            member_forecasts=tuple(
+                forecasts
+            ),
+            excluded_models=tuple(
+                excluded
+            ),
             price_forecast_1d=price_forecast_1d,
             price_forecast_7d=price_forecast_7d,
             price_forecast_30d=price_forecast_30d,
         )
 
 
-def _shap_contributions(
-    model: object, feature_row: pd.DataFrame, train_result: object
-) -> list[FeatureContribution]:
-    """Real SHAP-based feature contributions for a tree-based ensemble
-    member, per Document 4 §10.9 and the founder's explicit "Implement
-    SHAP" instruction — replaces the simplified single-top-feature
-    contribution this function's callers previously built directly from
-    `feature_importances`. Falls back to that simplified single-feature
-    contribution if SHAP explanation fails for any reason (e.g. an
-    unsupported estimator configuration) — a real, if less detailed,
-    contribution is still recorded rather than the explainability payload
-    silently losing this member's input entirely."""
+# ============================================================================
+# FORECAST CONSTRUCTION
+# ============================================================================
+
+
+def _build_forecast(
+    *,
+    symbol: str,
+    model_family: ModelFamily,
+    predictions: list[float],
+    confidence: float,
+    current_price: float,
+    model_version_id: ModelVersionId,
+) -> Forecast:
+
+    if not predictions:
+        predictions = [
+            current_price
+        ]
+
+    points: list[HorizonPoint] = []
+
+    horizons = {
+        1: 0,
+        7: min(
+            6,
+            len(predictions) - 1,
+        ),
+        30: min(
+            29,
+            len(predictions) - 1,
+        ),
+    }
+
+    confidence = max(
+        0.0,
+        min(
+            1.0,
+            float(confidence),
+        ),
+    )
+
+    uncertainty_fraction = max(
+        0.01,
+        min(
+            0.25,
+            0.20
+            * (
+                1.0
+                - confidence
+            ),
+        ),
+    )
+
+    for (
+        horizon_days,
+        index,
+    ) in horizons.items():
+
+        predicted_price = float(
+            predictions[index]
+        )
+
+        if not math.isfinite(
+            predicted_price
+        ):
+            predicted_price = (
+                current_price
+            )
+
+        uncertainty = (
+            abs(
+                predicted_price
+            )
+            * uncertainty_fraction
+        )
+
+        if uncertainty <= 0:
+            uncertainty = max(
+                abs(
+                    current_price
+                )
+                * 0.01,
+                0.01,
+            )
+
+        lower_bound = max(
+            0.0,
+            predicted_price
+            - uncertainty,
+        )
+
+        upper_bound = (
+            predicted_price
+            + uncertainty
+        )
+
+        points.append(
+            HorizonPoint(
+                horizon_days=horizon_days,
+                predicted_price=predicted_price,
+                lower_bound=float(
+                    lower_bound
+                ),
+                upper_bound=float(
+                    upper_bound
+                ),
+            )
+        )
+
+    return Forecast.create(
+        symbol=symbol,
+        model_family=model_family,
+        model_version_id=model_version_id,
+        points=tuple(points),
+        confidence=Confidence(
+            round(
+                confidence,
+                4,
+            )
+        ),
+        data_quality="full",
+    )
+
+
+# ============================================================================
+# SAFE FORECAST
+# ============================================================================
+
+
+def _safe_forecast(
+    value: float,
+    fallback: float,
+) -> float:
+
     try:
-        service = ShapExplainerService(model)  # type: ignore[arg-type]
-        payload = service.explain(feature_row)
-        return list(payload.top_contributions)
-    except Exception:  # noqa: BLE001 — deliberate broad fallback, see docstring
-        importances: dict[str, float] = getattr(train_result, "feature_importances", {})
-        if not importances:
-            return []
-        top_feature = max(importances.items(), key=lambda kv: kv[1])
-        return [FeatureContribution(name=top_feature[0], value=top_feature[1])]
+        numeric_value = float(
+            value
+        )
+    except (
+        TypeError,
+        ValueError,
+    ):
+        return float(
+            fallback
+        )
+
+    if not math.isfinite(
+        numeric_value
+    ):
+        return float(
+            fallback
+        )
+
+    if numeric_value <= 0:
+        return float(
+            fallback
+        )
+
+    return numeric_value
 
 
-def _has_both_classes(labels: pd.Series) -> bool:
-    """Guards against a genuine edge case: a strong, uninterrupted trend
-    (all-up or all-down) over the training window produces a
-    single-class label series, which scikit-learn/XGBoost's classifiers
-    cannot fit against (they require at least 2 classes). Checks the
-    actual 80% split each tree-based model's train() uses internally
-    (not just the overall label set) since a single-class overall set
-    with an even split could still fail the same way. Below 2 rows this
-    trivially returns False rather than raising, since there is no
-    meaningful split to check yet."""
-    if len(labels) < 2:
-        return False
-    split = max(1, int(len(labels) * 0.8))
-    training_slice = labels.iloc[:split]
-    return bool(training_slice.nunique() >= 2)
+# ============================================================================
+# PROBABILITY
+# ============================================================================
 
 
-def _direction_signal(current_price: float, forecast_price: float) -> float:
-    """Converts a raw price forecast into a normalized [-1, 1] directional
-    signal — magnitude capped at +/-1 via tanh so a single member with an
-    extreme forecast cannot dominate the weighted vote disproportionately
-    to its stated confidence."""
-    if current_price == 0:
-        return 0.0
-    pct_change = (forecast_price - current_price) / current_price
-    return float(np.tanh(pct_change * 10))
+def _clamp_probability(
+    probability: float,
+) -> float:
 
-
-def _confidence_from_rmse(rmse: float, current_price: float) -> float:
-    """Converts a regression model's RMSE into a [0, 1] confidence score
-    — lower relative error (RMSE as a fraction of price) means higher
-    confidence, per Document 4 §10.2 step 3's 'historical accuracy of
-    this model version' confidence component, approximated here from
-    the held-out validation RMSE computed during this same training call
-    (no separate historical-accuracy store exists yet this phase — see
-    known-issues.md)."""
-    if current_price == 0:
+    try:
+        probability = float(
+            probability
+        )
+    except (
+        TypeError,
+        ValueError,
+    ):
         return 0.5
-    relative_error = rmse / current_price
-    return float(max(0.1, min(0.95, 1.0 - relative_error)))
+
+    if not math.isfinite(
+        probability
+    ):
+        return 0.5
+
+    return max(
+        0.0,
+        min(
+            1.0,
+            probability,
+        ),
+    )
 
 
-def _combine_signals(signals: list[MemberSignal]) -> tuple[float, float]:
-    """Returns (overall_confidence, weighted_signal). Per Document 4
-    §10.2 step 3: confidence derives from (a) each member's own
-    confidence weighted by its base vote weight, and (b) ensemble
-    agreement (low variance across members' signals -> higher combined
-    confidence, high disagreement -> lower)."""
-    confidence_adjusted_weights = [s.weight * s.confidence for s in signals]
-    total_weight = sum(confidence_adjusted_weights)
-    if total_weight == 0:
-        # All members reported zero confidence — fall back to an
-        # unweighted average rather than dividing by zero.
-        weighted_signal = sum(s.signal for s in signals) / len(signals)
-        avg_confidence = sum(s.confidence for s in signals) / len(signals)
-        return avg_confidence, weighted_signal
+# ============================================================================
+# SHAP
+# ============================================================================
+
+
+def _shap_contributions(
+    model: object,
+    feature_row: pd.DataFrame,
+) -> list[FeatureContribution]:
+
+    try:
+
+        service = ShapExplainerService(
+            model
+        )
+
+        payload = service.explain(
+            feature_row
+        )
+
+        return list(
+            payload.top_contributions
+        )
+
+    except Exception as exc:
+
+        print(
+            "⚠️ SHAP unavailable:",
+            f"{type(exc).__name__}: {exc}",
+        )
+
+        return []
+
+
+# ============================================================================
+# DIRECTION SIGNAL
+# ============================================================================
+
+
+def _direction_signal(
+    current_price: float,
+    forecast_price: float,
+) -> float:
+
+    if (
+        not math.isfinite(
+            current_price
+        )
+        or not math.isfinite(
+            forecast_price
+        )
+        or current_price <= 0
+    ):
+        return 0.0
+
+    pct_change = (
+        forecast_price
+        - current_price
+    ) / current_price
+
+    return float(
+        np.tanh(
+            pct_change * 10.0
+        )
+    )
+
+
+# ============================================================================
+# SIGNAL COMBINATION
+# ============================================================================
+
+
+def _combine_signals(
+    signals: list[MemberSignal],
+) -> tuple[float, float]:
+
+    if not signals:
+        return (
+            0.0,
+            0.0,
+        )
+
+    confidence_adjusted_weights = [
+        signal.weight
+        * signal.confidence
+        for signal in signals
+    ]
+
+    total_weight = sum(
+        confidence_adjusted_weights
+    )
+
+    if total_weight <= 0:
+
+        weighted_signal = float(
+            np.mean(
+                [
+                    signal.signal
+                    for signal in signals
+                ]
+            )
+        )
+
+        average_confidence = float(
+            np.mean(
+                [
+                    signal.confidence
+                    for signal in signals
+                ]
+            )
+        )
+
+        return (
+            average_confidence,
+            weighted_signal,
+        )
 
     weighted_signal = (
-        sum(s.signal * w for s, w in zip(signals, confidence_adjusted_weights, strict=True))
+        sum(
+            signal.signal
+            * adjusted_weight
+            for (
+                signal,
+                adjusted_weight,
+            ) in zip(
+                signals,
+                confidence_adjusted_weights,
+                strict=True,
+            )
+        )
         / total_weight
     )
-    avg_member_confidence = sum(s.confidence for s in signals) / len(signals)
 
-    signal_values = [s.signal for s in signals]
-    agreement_penalty = float(np.std(signal_values)) if len(signal_values) > 1 else 0.0
-    agreement_factor = max(0.5, 1.0 - agreement_penalty)
+    average_confidence = float(
+        np.mean(
+            [
+                signal.confidence
+                for signal in signals
+            ]
+        )
+    )
 
-    overall_confidence = min(1.0, max(0.0, avg_member_confidence * agreement_factor))
-    return overall_confidence, float(weighted_signal)
+    signal_values = [
+        signal.signal
+        for signal in signals
+    ]
+
+    agreement_penalty = (
+        float(
+            np.std(
+                signal_values
+            )
+        )
+        if len(signal_values) > 1
+        else 0.0
+    )
+
+    agreement_factor = max(
+        0.2,
+        1.0
+        - agreement_penalty,
+    )
+
+    overall_confidence = min(
+        1.0,
+        max(
+            0.0,
+            average_confidence
+            * agreement_factor,
+        ),
+    )
+
+    return (
+        float(
+            overall_confidence
+        ),
+        float(
+            weighted_signal
+        ),
+    )
 
 
-def _signal_to_verdict(weighted_signal: float) -> Verdict:
+# ============================================================================
+# VERDICT
+# ============================================================================
+
+
+def _signal_to_verdict(
+    weighted_signal: float,
+) -> Verdict:
+
     if weighted_signal > _BUY_THRESHOLD:
         return "buy"
+
     if weighted_signal < _SELL_THRESHOLD:
         return "sell"
+
     return "hold"
 
 
-def _determine_data_quality(excluded: list[ModelFamily]) -> DataQuality:
-    if not excluded:
+# ============================================================================
+# DATA QUALITY
+# ============================================================================
+
+
+def _determine_data_quality(
+    *,
+    n_rows: int,
+    excluded: list[ModelFamily],
+    active_models: set[ModelFamily],
+) -> DataQuality:
+
+    # This should normally be unreachable because decide()
+    # rejects datasets below this threshold.
+    if n_rows < MINIMUM_DECISION_HISTORY_DAYS:
+        return "insufficientHistory"
+
+    # All six required model families successfully participated.
+    if (
+        len(active_models) == 6
+        and not excluded
+    ):
         return "full"
-    return "partialEnsemble"
+
+    # At least one model executed, but some models were excluded.
+    if active_models:
+        return "partialEnsemble"
+
+    # Sufficient market history exists, but no model was available.
+    return "insufficientHistory"
+
+
+# ============================================================================
+# REASONING
+# ============================================================================
 
 
 def _build_reasoning(
-    verdict: Verdict, signals: list[MemberSignal], excluded: list[ModelFamily]
+    verdict: Verdict,
+    signals: list[MemberSignal],
+    excluded: list[ModelFamily],
 ) -> str:
-    contributing = ", ".join(f"{s.model_family} ({s.signal:+.2f})" for s in signals)
-    reasoning = f"Verdict '{verdict}' derived from weighted votes: {contributing}."
+
+    if signals:
+
+        contributing = ", ".join(
+            (
+                f"{signal.model_family}"
+                f"(signal={signal.signal:+.2f}, "
+                f"confidence={signal.confidence:.2f}, "
+                f"weight={signal.weight:.2f})"
+            )
+            for signal in signals
+        )
+
+        reasoning = (
+            f"Verdict '{verdict}' derived from "
+            "confidence-adjusted weighted ensemble "
+            f"votes: {contributing}."
+        )
+
+    else:
+
+        reasoning = (
+            f"Verdict '{verdict}' produced because "
+            "no model family successfully produced "
+            "an inference signal."
+        )
+
     if excluded:
-        reasoning += f" Excluded (insufficient history or unavailable): {', '.join(excluded)}."
+
+        reasoning += (
+            " Excluded model families: "
+            f"{', '.join(excluded)}."
+        )
+
     return reasoning

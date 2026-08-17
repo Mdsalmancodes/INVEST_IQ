@@ -1,0 +1,16 @@
+{
+  "artifact_location": "/app/data/models/xgboost/AAPL/20260814T005728370790Z.pkl",
+  "family": "xgboost",
+  "id": "de013dd8-e249-4b67-8a4c-8df42bd6133d",
+  "rollout_percentage": 100,
+  "status": "active",
+  "symbol": "AAPL",
+  "trained_at": "2026-08-14T00:57:53.891702+00:00",
+  "training_data_range_end": "2026-08-13T00:00:00",
+  "training_data_range_start": "2025-07-10T00:00:00",
+  "validation_metrics": {
+    "accuracy": 0.625,
+    "directional_accuracy": 0.625
+  },
+  "version_tag": "20260814T005728370790Z"
+}

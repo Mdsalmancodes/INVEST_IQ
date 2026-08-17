@@ -1,0 +1,15 @@
+{
+  "id": "064a8d20-2f21-4873-9868-6c32366d80bd",
+  "family": "lstm",
+  "version_tag": "20260810T104824",
+  "trained_at": "2026-08-10T10:48:30.513302+00:00",
+  "training_data_range_start": "2025-08-11T00:00:00",
+  "training_data_range_end": "2026-08-07T00:00:00",
+  "validation_metrics": {
+    "rmse": 19.692228406040197,
+    "mae": 15.237131219161185
+  },
+  "status": "active",
+  "artifact_location": "data/models/lstm/RELIANCE.NS/20260810T104824.pt",
+  "rollout_percentage": 100
+}

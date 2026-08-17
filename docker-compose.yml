@@ -1,0 +1,55 @@
+version: "3.9"
+
+services:
+  core-api:
+    build:
+      context: .
+      dockerfile: apps/core-api/Dockerfile
+    container_name: investiq-core-api
+    ports:
+      - "8000:8000"
+    env_file:
+      - ./apps/core-api/.env
+    depends_on:
+      - redis
+      - postgres
+      - ai-service
+    command: >
+      bash -c "
+      python -m alembic upgrade head &&
+      python -m uvicorn src.main:app --host 0.0.0.0 --port 8000
+      "
+
+  ai-service:
+    build:
+      context: .
+      dockerfile: apps/ai-service/Dockerfile
+    container_name: investiq-ai-service
+    ports:
+      - "8001:8001"
+    env_file:
+      - ./apps/ai-service/.env
+    volumes:
+      - ./data:/app/data   # ✅ CRITICAL (persistent storage)
+    command: python -m uvicorn src.main:app --host 0.0.0.0 --port 8001
+
+  redis:
+    image: redis:7
+    container_name: investiq-redis
+    ports:
+      - "6379:6379"
+
+  postgres:
+    image: postgres:15
+    container_name: investiq-postgres
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: investiq
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+
+volumes:
+  postgres_data:

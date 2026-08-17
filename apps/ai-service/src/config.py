@@ -1,17 +1,22 @@
 """Centralized, validated configuration for ai-service.
 
-Per docs/architecture/07-devops-cicd-deployment-scalability.md §17.2, same
-fail-fast pattern as core-api (src/config.py there). Phase 7 (Document 4
-§10) adds the settings the Hybrid AI/ML Engine actually needs: core-api's
-base URL (for the HTTP-based MarketDataRepository — per the founder's
-"reuse the existing Market Data module, never duplicate data" instruction,
-ai-service never opens its own Postgres connection) and a local filesystem
-path for model artifacts + prediction run records (disclosed in
-docs/phase-7/known-issues.md — the frozen architecture specifies
-S3-compatible object storage and MongoDB respectively; neither is
-configured in this environment, so both persist to local disk behind the
-same repository-Protocol abstractions, making a later swap to real object
-storage/Mongo an infrastructure-only change).
+Per docs/architecture/07-devops-cicd-deployment-scalability.md §17.2,
+this follows the same fail-fast configuration pattern as core-api.
+
+Phase 7 adds the settings required by the Hybrid AI/ML Engine:
+
+- core-api base URL for the HTTP-based MarketDataRepository
+- trained ML model artifact storage
+- model registry metadata storage
+- prediction-run storage
+
+The frozen architecture specifies S3-compatible object storage and MongoDB
+for production. Neither is configured in this local environment, so the
+repository abstractions currently persist to the local filesystem.
+
+This keeps the application/domain layers independent from the storage
+implementation and allows the infrastructure implementation to be replaced
+later without changing the application logic.
 """
 
 from __future__ import annotations
@@ -24,65 +29,201 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 class Settings(BaseSettings):
+    """Centralized ai-service configuration."""
+
     model_config = SettingsConfigDict(
         env_file=".env",
         env_file_encoding="utf-8",
         extra="ignore",
     )
 
-    environment: Literal["local", "ci", "staging", "production"] = "local"
+    # ======================================================================
+    # SERVICE
+    # ======================================================================
+
+    environment: Literal[
+        "local",
+        "ci",
+        "staging",
+        "production",
+    ] = "local"
+
     log_level: str = "INFO"
+
     service_name: str = "ai-service"
 
-    # Redis — same 3-instance split as core-api (Document 3 §7.7). ai-service
-    # only needs redis-cache and redis-broker in the frozen architecture
-    # (prediction/screener result caching; Celery broker+result backend for
-    # ml-inference/ml-training queues) — it has no session concept of its own.
+    # ======================================================================
+    # REDIS
+    # ======================================================================
+
+    # ai-service uses Redis for:
+    #
+    # - prediction/result caching
+    # - Celery broker
+    # - Celery result backend
+    #
+    # Session management belongs to core-api and is not owned by ai-service.
+
     redis_cache_url: RedisDsn
+
     redis_broker_url: RedisDsn
 
-    # Phase 7 — Hybrid AI/ML Engine settings.
-    core_api_base_url: str = "http://127.0.0.1:8000"
-    """Per the founder's instruction to reuse core-api's existing Market
-    Data module rather than duplicate the ohlcv_bars table — ai-service
-    calls core-api's already-public GET /api/v1/instruments/{symbol}/bars
-    endpoint over HTTP for OHLCV history."""
+    # ======================================================================
+    # CORE API
+    # ======================================================================
+
+    core_api_base_url: str = "http://core-api:8000"
+
+    """Base URL of the existing core-api.
+
+    ai-service reuses core-api's Market Data module instead of maintaining
+    a second direct connection to the market-data database.
+
+    The MarketDataRepository therefore calls core-api over HTTP for
+    historical OHLCV data.
+    """
+
+    # ======================================================================
+    # ML ARTIFACT STORAGE
+    # ======================================================================
 
     ml_artifact_storage_path: str = "./data/models"
-    """Local filesystem root for trained model artifacts (ModelRegistryRepository)
-    — disclosed local-disk substitute for the frozen architecture's
-    S3-compatible object storage (see known-issues.md)."""
+
+    """Local filesystem root for trained ML model artifacts.
+
+    Examples:
+
+        ./data/models/
+            lstm/
+                AAPL/
+                    <version>.pt
+
+            arima/
+                AAPL/
+                    <version>.pkl
+
+            prophet/
+                AAPL/
+                    <version>.pkl
+
+            random_forest/
+                AAPL/
+                    <version>.pkl
+
+            xgboost/
+                AAPL/
+                    <version>.pkl
+
+    This path is used by:
+
+        - ModelLoader
+        - TrainModelUseCase
+        - RetrainModelUseCase
+
+    It stores the actual trained model files.
+    """
+
+    # ======================================================================
+    # ML MODEL REGISTRY
+    # ======================================================================
+
+    ml_model_registry_storage_path: str = "./data/model_registry"
+
+    """Local filesystem root for ModelVersion registry metadata.
+
+    Examples:
+
+        ./data/model_registry/
+            lstm/
+                <model-version-id>.json
+
+            arima/
+                <model-version-id>.json
+
+            prophet/
+                <model-version-id>.json
+
+            random_forest/
+                <model-version-id>.json
+
+            xgboost/
+                <model-version-id>.json
+
+    These JSON files contain metadata such as:
+
+        - model version ID
+        - model family
+        - stock symbol
+        - artifact location
+        - training timestamp
+        - training data range
+        - validation metrics
+        - rollout percentage
+        - status
+
+    IMPORTANT:
+
+        This is intentionally separate from
+        ml_artifact_storage_path.
+
+        ml_artifact_storage_path
+            -> actual .pt / .pkl model files
+
+        ml_model_registry_storage_path
+            -> ModelVersion JSON metadata
+    """
+
+    # ======================================================================
+    # PREDICTION RUN STORAGE
+    # ======================================================================
 
     ml_prediction_run_storage_path: str = "./data/prediction_runs"
-    """Local filesystem root for persisted PredictionRun records
-    (PredictionRunRepository) — disclosed local-disk substitute for the
-    frozen architecture's MongoDB collection (see known-issues.md)."""
 
-    # Phase 8 — Enterprise Security: "AI Service must never be directly
-    # exposed" is enforced here, not just by docker-compose network
-    # topology (which is a deployment convention, not a code-level
-    # guarantee an auditor or test suite can verify). Every request to
-    # /api/v1/ml/* must carry a matching X-Internal-Service-Token header,
-    # which only core-api's AiServiceClient is configured to know and send
-    # (see apps/core-api/src/infrastructure/http/ai_service_client.py).
-    # /health and /metrics remain open (infra liveness/readiness probes and
-    # monitoring scrapers are not core-api, and carry no user-identifying
-    # data worth protecting behind the secret).
-    internal_service_token: str = "change-me-in-every-real-environment"
-    """Required, must be identical to core-api's own
-    INTERNAL_SERVICE_TOKEN setting — validated by
-    src/presentation/internal_auth_middleware.py on every /api/v1/ml/*
-    request. The insecure literal default is intentional and matches this
-    codebase's existing convention for local-dev-only secrets (e.g.
-    apps/web/.env.example's NEXTAUTH_SECRET) — every real deployment
-    environment MUST override it via the actual environment variable;
-    docs/phase-8/known-issues.md discloses this explicitly rather than
-    silently relying on the default being changed."""
+    """Local filesystem root for persisted PredictionRun records.
+
+    This is the local-disk implementation used in the current environment
+    as a substitute for the production MongoDB-backed repository.
+    """
+
+    # ======================================================================
+    # INTERNAL SERVICE SECURITY
+    # ======================================================================
+
+    internal_service_token: str = (
+        "change-me-in-every-real-environment"
+    )
+
+    """Internal authentication token shared with core-api.
+
+    Every protected /api/v1/ml/* request must provide the matching
+    X-Internal-Service-Token header.
+
+    Only core-api's AiServiceClient should know and send this token.
+
+    /health and /metrics remain publicly accessible inside the deployment
+    environment so infrastructure health checks and monitoring systems can
+    access them.
+
+    IMPORTANT:
+
+        The default value is intended only for local development.
+
+        Production/staging deployments MUST override this value through
+        the environment configuration.
+    """
+
+
+# ==========================================================================
+# SETTINGS DEPENDENCY
+# ==========================================================================
 
 
 @lru_cache
 def get_settings() -> Settings:
-    """Cached settings instance — exposed as a FastAPI dependency (see
-    dependencies.py) so tests can override it via app.dependency_overrides.
+    """Return the cached ai-service Settings instance.
+
+    FastAPI dependencies can override this function during tests using
+    app.dependency_overrides.
     """
+
     return Settings()

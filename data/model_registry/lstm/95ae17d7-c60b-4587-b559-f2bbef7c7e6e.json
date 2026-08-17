@@ -1,0 +1,16 @@
+{
+  "artifact_location": "/app/data/models/lstm/AAPL/20260814T005720043744Z.pt",
+  "family": "lstm",
+  "id": "95ae17d7-c60b-4587-b559-f2bbef7c7e6e",
+  "rollout_percentage": 100,
+  "status": "active",
+  "symbol": "AAPL",
+  "trained_at": "2026-08-14T00:57:22.323428+00:00",
+  "training_data_range_end": "2026-08-13T00:00:00",
+  "training_data_range_start": "2025-07-10T00:00:00",
+  "validation_metrics": {
+    "mae": 11.426891326904297,
+    "rmse": 13.213905908295564
+  },
+  "version_tag": "20260814T005720043744Z"
+}
